@@ -109,6 +109,13 @@ def require_view(user=Depends(current_user)):
 
 
 # ---------------- public ----------------
+@app.get("/api/_iphdrs")
+def _iphdrs(request: Request):  # TEMP: inspect proxy headers, removed next commit
+    return {k: v for k, v in request.headers.items() if k.lower() in
+            ("x-forwarded-for", "true-client-ip", "cf-connecting-ip", "x-real-ip", "forwarded")} | \
+           {"client": request.client.host if request.client else None}
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "time": db.now().isoformat()}
