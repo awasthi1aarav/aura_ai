@@ -75,6 +75,27 @@ Each one develops over a few minutes, so the forecast flags it **before** it cro
 - **AI:** Google Gemini API (free tier; model auto-selected, override with `GEMINI_MODEL`) through a plain REST call.
 - **Hosting:** Render (free web service).
 
+## Team and how AURA was built
+
+**Team Orbital Five** (5 members): Aarav Awasthi (team lead, backend), one more on backend, two on
+database and one on frontend. The team set the product vision and made the design decisions; the AI coding
+assistant Claude wrote most of the code under the team's direction.
+
+**What the team brought:**
+- **The product:** four parts (dashboard, analysis and alerts, AI assistant, admin panel), prediction
+  from each astronaut's own baseline, a hardware-agnostic sensor pipeline, a free-tier-only budget,
+  and a minimal white-and-gold design.
+- **The ideas that shape AURA:** missions that work like game servers, wellbeing support for loneliness
+  and low mood, distance and travel time to Earth, and long-term health records with backup.
+- **Fit to the challenge:** the team brought NASA's official challenge text and resources and required
+  every point to be covered.
+- **Quality and security:** the team asked for privacy between users, a security review and a full
+  stress test, and tested the live app (finding, for example, the assistant failures that were fixed).
+- **Infrastructure:** the team set up and runs GitHub, Render, Supabase, the Gemini API key and the
+  keep-alive job.
+
+AI use is disclosed in full in [docs/AI_USE.md](docs/AI_USE.md).
+
 ## Run locally
 
 ```bash
