@@ -12,6 +12,7 @@ import asyncio
 import csv
 import hmac
 import io
+import json
 import os
 import re
 import time
@@ -20,14 +21,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, insert, select, update
 
-from . import analysis, chat, db, knowledge, simulator
+from . import analysis, backup, chat, db, knowledge, simulator
 from .metrics import ALL_METRICS, CHECKIN_METRICS, CREW_METRICS
 from .security import check_password, client_ip, hash_password, limiter, make_token, read_token
 
@@ -191,6 +192,34 @@ def host_mission(body: HostIn, request: Request):
     return {"code": code, "name": body.name.strip(), "token": make_token("host", "host", mid)}
 
 
+@app.post("/api/missions/restore")
+async def restore_mission(request: Request, file: UploadFile = File(...), name: str = Form(...),
+                          password: str = Form(...)):
+    """Create a NEW mission from a backup file (the original mission is never touched)."""
+    ip = client_ip(request)
+    if not (2 <= len(name.strip()) <= 60) or not (8 <= len(password) <= 200):
+        raise HTTPException(422, "Name must be 2-60 characters and password at least 8")
+    if not limiter.hit(f"host:{ip}", HOSTS_PER_HOUR, 3600):
+        raise HTTPException(429, "You've hosted several missions recently. Try again later.")
+    raw = await file.read(30_000_001)
+    if len(raw) > 30_000_000:
+        raise HTTPException(413, "Backup too large (max 30 MB)")
+    with db.engine.connect() as conn:
+        if conn.execute(select(func.count()).select_from(db.missions)).scalar() >= MAX_MISSIONS:
+            raise HTTPException(503, "Mission capacity reached. Try again later.")
+        for _ in range(10):
+            code = db.new_code()
+            if not db.get_mission(conn, code):
+                break
+    try:
+        mid, counts = await asyncio.to_thread(backup.restore, raw, name.strip(), hash_password(password), code,
+                                              lambda e: e in knowledge.ENVIRONMENTS)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    log_action(mid, "host", ip, "mission restored from backup", json.dumps(counts))
+    return {"code": code, "name": name.strip(), "token": make_token("host", "host", mid), "restored": counts}
+
+
 @app.get("/api/missions/{code}")
 def find_mission(m=Depends(mission)):
     return {"code": m.code, "name": m.name, "is_demo": bool(m.is_demo)}
@@ -274,19 +303,23 @@ def list_checkins(crew_id: int, m=Depends(mission)):
                      note=r.note) for r in rows]
 
 
+RANGES = {"24h": 1, "7d": 7, "30d": 30, "90d": 90}
+
+
 @app.get("/api/m/{code}/history")
 def history(metric: str, crew_id: Optional[int] = None, range: str = "24h", m=Depends(mission)):
-    """Hourly points for a sensor metric (24h or 7d), or daily check-in values (7d)."""
+    """Sensor metric: hourly points (24h / 7d) or daily averages (30d / 90d). Check-in metric: each check-in."""
     from datetime import timedelta
-    span = timedelta(days=7) if range == "7d" else timedelta(hours=24)
-    since = db.now() - span
+    days = RANGES.get(range, 1)
+    since = db.now() - timedelta(days=days)
+    daily = days >= 30
     with db.engine.connect() as conn:
         if metric in CHECKIN_METRICS:
             if not crew_id:
                 raise HTTPException(422, "crew_id required")
             _owned(conn, db.crew, crew_id, m.id)
             rows = conn.execute(select(db.checkins.c.ts, getattr(db.checkins.c, metric)).where(
-                db.checkins.c.crew_id == crew_id, db.checkins.c.ts >= db.now() - timedelta(days=7))
+                db.checkins.c.crew_id == crew_id, db.checkins.c.ts >= db.now() - timedelta(days=max(days, 7)))
                 .order_by(db.checkins.c.ts)).all()
             return {"metric": metric, "points": [dict(t=r[0].isoformat(), v=r[1]) for r in rows if r[1] is not None]}
         q = select(db.sensors.c.id).where(db.sensors.c.mission_id == m.id, db.sensors.c.metric == metric)
@@ -295,14 +328,16 @@ def history(metric: str, crew_id: Optional[int] = None, range: str = "24h", m=De
         if not sid:
             raise HTTPException(404, "No sensor for that metric")
         buckets = {}
+
+        def key(ts):
+            ts = ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts
+            return ts.replace(hour=0, minute=0, second=0, microsecond=0) if daily else ts.replace(minute=0, second=0, microsecond=0)
         for h, avg, n in conn.execute(select(db.rollups.c.hour, db.rollups.c.avg, db.rollups.c.n).where(
                 db.rollups.c.sensor_id == sid, db.rollups.c.hour >= since)):
-            h = h.replace(tzinfo=timezone.utc) if h.tzinfo is None else h
-            buckets.setdefault(h, []).append((avg, n or 1))
+            buckets.setdefault(key(h), []).append((avg, n or 1))
         for v, ts in conn.execute(select(db.readings.c.value, db.readings.c.ts).where(
                 db.readings.c.sensor_id == sid, db.readings.c.ts >= since)):
-            ts = ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts
-            buckets.setdefault(ts.replace(minute=0, second=0, microsecond=0), []).append((v, 1))
+            buckets.setdefault(key(ts), []).append((v, 1))
     pts = []
     for h in sorted(buckets):
         tot = sum(n for _, n in buckets[h])
@@ -310,65 +345,44 @@ def history(metric: str, crew_id: Optional[int] = None, range: str = "24h", m=De
     return {"metric": metric, "points": pts}
 
 
-class ChatIn(BaseModel):
-    message: str = Field(min_length=1, max_length=2000)
-    crew_id: Optional[int] = None
-
-
-def _client(x_client_id: Optional[str] = Header(None)):
-    if not x_client_id or not CLIENT_ID.match(x_client_id):
-        raise HTTPException(400, "Missing or invalid X-Client-Id")
-    return x_client_id
-
-
-def _chat_scope(q, mid, crew_id, client):
-    q = q.where(db.chats.c.mission_id == mid, db.chats.c.client_id == client)
-    return q.where(db.chats.c.crew_id == crew_id) if crew_id else q.where(db.chats.c.crew_id.is_(None))
-
-
-def _history(mid, crew_id, client, limit=50):
-    q = _chat_scope(select(db.chats), mid, crew_id, client)
-    q = q.order_by(db.chats.c.ts.desc(), db.chats.c.id.desc()).limit(limit)
+@app.get("/api/m/{code}/records")
+def records(crew_id: int, days: int = 30, q: str = "", kind: str = "all", m=Depends(mission)):
+    """Health record timeline for one astronaut: check-ins and alert history, newest first."""
+    from datetime import timedelta
+    days = max(1, min(days, 365))
+    since = db.now() - timedelta(days=days)
+    out = []
     with db.engine.connect() as conn:
-        rows = list(conn.execute(q))
-    return [dict(id=r.id, role=r.role, text=r.text, source=r.source, ts=r.ts.isoformat()) for r in reversed(rows)]
-
-
-@app.get("/api/m/{code}/chat/history")
-def chat_history(crew_id: Optional[int] = None, client: str = Depends(_client), m=Depends(mission)):
-    """Only the conversation started from this browser, in this mission."""
-    return _history(m.id, crew_id, client)
-
-
-@app.delete("/api/m/{code}/chat/history")
-def clear_history(crew_id: Optional[int] = None, client: str = Depends(_client), m=Depends(mission)):
-    with db.engine.begin() as conn:
-        conn.execute(_chat_scope(delete(db.chats), m.id, crew_id, client))
-    return {"ok": True}
-
-
-@app.post("/api/m/{code}/chat")
-async def chat_endpoint(body: ChatIn, request: Request, client: str = Depends(_client), m=Depends(mission)):
-    ip = client_ip(request)
-    if not limiter.hit(f"chat:{ip}", CHAT_PER_MIN, 60):
-        raise HTTPException(429, "Too many questions. Please wait a minute.")
-    if not limiter.hit("chat:all", CHAT_PER_HOUR_ALL, 3600):
-        raise HTTPException(429, "The assistant is busy. Please try again later.")
-    if body.crew_id:
-        with db.engine.connect() as conn:
-            if not conn.execute(select(db.crew.c.id).where(db.crew.c.id == body.crew_id,
-                                                           db.crew.c.mission_id == m.id)).first():
-                raise HTTPException(404, "Crew member not found in this mission")
-    history = [{"role": h["role"], "text": h["text"]} for h in _history(m.id, body.crew_id, client, 8)]
-    text, source = await chat.reply(m.id, body.message, history, body.crew_id)
-    with db.engine.begin() as conn:
-        conn.execute(insert(db.chats), [
-            dict(mission_id=m.id, crew_id=body.crew_id, client_id=client, role="user", text=body.message,
-                 source="", ts=db.now()),
-            dict(mission_id=m.id, crew_id=body.crew_id, client_id=client, role="assistant", text=text,
-                 source=source, ts=db.now()),
-        ])
-    return {"reply": text, "source": source}
+        _owned(conn, db.crew, crew_id, m.id)
+        lims = {r.metric: r for r in conn.execute(select(db.limits).where(db.limits.c.mission_id == m.id))}
+        if kind in ("all", "checkin"):
+            for r in conn.execute(select(db.checkins).where(db.checkins.c.crew_id == crew_id, db.checkins.c.ts >= since)
+                                  .order_by(db.checkins.c.ts.desc()).limit(500)):
+                vals, flags = [], []
+                for mt in CHECKIN_METRICS:
+                    v = getattr(r, mt)
+                    if v is None:
+                        continue
+                    st = analysis._status(v, lims.get(mt))
+                    vals.append(dict(metric=mt, label=CHECKIN_METRICS[mt]["label"], unit=CHECKIN_METRICS[mt]["unit"],
+                                     value=v, status=st))
+                    if st != "ok":
+                        flags.append(st)
+                out.append(dict(type="checkin", ts=r.ts.isoformat(), values=vals, exercise_min=r.exercise_min,
+                                symptoms=[x for x in (r.symptoms or "").split(",") if x], note=r.note or "",
+                                severity="critical" if "critical" in flags else "warning" if flags else "ok"))
+        if kind in ("all", "alert"):
+            for r in conn.execute(select(db.alert_log).where(db.alert_log.c.crew_id == crew_id,
+                                                             db.alert_log.c.started >= since)
+                                  .order_by(db.alert_log.c.started.desc()).limit(500)):
+                out.append(dict(type="alert", ts=r.started.isoformat(), ended=r.ended.isoformat() if r.ended else None,
+                                severity=r.severity, kind=r.kind, message=r.message, metric=r.metric,
+                                hazard=knowledge.HAZARDS.get(r.hazard), risk=r.risk))
+    if q.strip():
+        needle = q.strip().lower()
+        out = [o for o in out if needle in " ".join(str(v) for v in o.values()).lower()]
+    out.sort(key=lambda o: o["ts"], reverse=True)
+    return out
 
 
 # ---------------- sensor ingest ----------------
@@ -672,6 +686,21 @@ def delete_checkin(cid: int, m=Depends(require_host)):
         conn.execute(delete(db.checkins).where(db.checkins.c.id == cid))
     analysis.invalidate(m.id)
     return {"ok": True}
+
+
+@app.get("/api/m/{code}/admin/export")
+def export(request: Request, format: str = "json", what: str = "checkins", m=Depends(require_host)):
+    """Download this mission's data: full JSON backup (restorable) or CSV for spreadsheets."""
+    stamp = db.now().strftime("%Y%m%d")
+    who = current_user(request.headers.get("authorization")) or {}
+    log_action(m.id, who.get("username"), client_ip(request), f"export {format}" + (f" {what}" if format == "csv" else ""))
+    if format == "csv":
+        body = backup.export_csv(m, "checkins" if what == "checkins" else "vitals")
+        return Response(body, media_type="text/csv", headers={
+            "Content-Disposition": f'attachment; filename="aura-{m.code}-{what}-{stamp}.csv"'})
+    data = backup.export_mission(m)
+    return Response(json.dumps(data, separators=(",", ":")), media_type="application/json", headers={
+        "Content-Disposition": f'attachment; filename="aura-{m.code}-backup-{stamp}.json"'})
 
 
 @app.get("/api/m/{code}/admin/audit")

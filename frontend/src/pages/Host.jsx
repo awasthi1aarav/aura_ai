@@ -10,6 +10,22 @@ export default function Host() {
   const [joinErr, setJoinErr] = useState('')
   const [busy, setBusy] = useState(false)
   const [made, setMade] = useState(null)
+  const [rest, setRest] = useState({ name: '', password: '', file: null })
+  const [restErr, setRestErr] = useState('')
+
+  async function restore(e) {
+    e.preventDefault()
+    setRestErr('')
+    if (!rest.file) { setRestErr('Choose a backup file.'); return }
+    setBusy(true)
+    const fd = new FormData()
+    fd.append('file', rest.file); fd.append('name', rest.name.trim()); fd.append('password', rest.password)
+    try {
+      const r = await api('/api/missions/restore', { method: 'POST', form: fd })
+      setToken(r.code, r.token)
+      setMade({ ...r, restoredNote: `Restored ${r.restored.crew} crew, ${r.restored.checkins} check-ins and ${r.restored.history_days} days of vitals history.` })
+    } catch (e2) { setRestErr(e2.message) } finally { setBusy(false) }
+  }
 
   async function host(e) {
     e.preventDefault()
@@ -39,13 +55,14 @@ export default function Host() {
     return (
       <div className="panel login wide">
         <h2>{made.name} is live</h2>
+        {made.restoredNote && <div className="note">{made.restoredNote}</div>}
         <p className="sub">Share the code or link with your crew. Anyone with it can watch; only people with the password can change things.</p>
         <div className="bigcode mono">{made.code}</div>
         <div className="share">
           <span className="mono small muted">{link}</span>
           <button className="btn" onClick={() => navigator.clipboard?.writeText(link)}>Copy link</button>
         </div>
-        <p className="sub small">Keep the password safe — it can't be recovered. Missions with no visitors for 7 days are removed.</p>
+        <p className="sub small">Keep the password safe — it can't be recovered. Missions with no visitors for 90 days are removed; download a backup from Admin → Mission to keep data longer.</p>
         <a className="btn gold" href={`#/m/${made.code}`}>Open mission</a>
       </div>
     )
@@ -75,6 +92,15 @@ export default function Host() {
         {joinErr && <div className="err">{joinErr}</div>}
         <button className="btn gold">Join</button>
         <p className="sub small">Or explore the shared <a href="#/m/DEMO">Demo mission</a>.</p>
+      </form>
+      <form className="panel restore" onSubmit={restore}>
+        <h2>Restore from backup</h2>
+        <p className="sub">Bring back a mission from a backup file downloaded in Admin → Mission. It becomes a new mission with a new code.</p>
+        <label>Backup file (.json)<input type="file" accept=".json,application/json" onChange={e => setRest({ ...rest, file: e.target.files?.[0] || null })} /></label>
+        <label>Mission name<input required minLength={2} maxLength={60} value={rest.name} onChange={e => setRest({ ...rest, name: e.target.value })} /></label>
+        <label>New mission password (min 8)<input required type="password" minLength={8} value={rest.password} onChange={e => setRest({ ...rest, password: e.target.value })} autoComplete="new-password" /></label>
+        {restErr && <div className="err">{restErr}</div>}
+        <button className="btn gold" disabled={busy}>{busy ? 'Restoring…' : 'Restore mission'}</button>
       </form>
     </div>
   )

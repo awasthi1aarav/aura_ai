@@ -17,6 +17,7 @@ from .metrics import DECIMALS, SHIP_NOMINAL, SIM_NOISE
 log = logging.getLogger("aura.sim")
 TICK_SECONDS = 5
 KEEP_HOURS = 3
+HISTORY_DAYS = 90     # hourly vitals history kept this long
 
 SCENARIOS = {
     "none": "Normal operations",
@@ -108,7 +109,7 @@ def tick():
             conn.execute(insert(db.readings), rows)
 
 
-IDLE_DAYS = 7         # hosted missions untouched this long are deleted
+IDLE_DAYS = 90        # hosted missions untouched this long are deleted
 
 
 def prune():
@@ -127,7 +128,7 @@ def prune():
                 dict(sensor_id=sid, hour=h, avg=sum(vs) / len(vs), min=min(vs), max=max(vs), n=len(vs))
                 for (sid, h), vs in buckets.items()])
         conn.execute(delete(db.readings).where(db.readings.c.ts < cutoff, db.readings.c.source == "simulator"))
-        conn.execute(delete(db.rollups).where(db.rollups.c.hour < db.now() - timedelta(days=8)))
+        conn.execute(delete(db.rollups).where(db.rollups.c.hour < db.now() - timedelta(days=HISTORY_DAYS + 1)))
         idle = conn.execute(select(db.missions.c.id).where(
             db.missions.c.is_demo.is_(False),
             db.missions.c.last_active < db.now() - timedelta(days=IDLE_DAYS))).all()

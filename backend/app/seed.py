@@ -12,14 +12,14 @@ from .metrics import DECIMALS, SHIP_NOMINAL, SIM_NOISE
 SYMPTOM_POOL = ["headache", "congestion", "back pain", "fatigue", "poor sleep"]
 
 
-def seed_checkins(conn, mission_id, crew_id, days=7):
+def seed_checkins(conn, mission_id, crew_id, days=7, older_than_days=-1):
     rnd = random.Random(crew_id * 7919)
     name = conn.execute(select(db.crew.c.name).where(db.crew.c.id == crew_id)).scalar() or ""
     sleepy = "Rahman" in name          # one demo crew member has a worsening sleep trend
     skip_today = "Ferreira" in name     # one demo crew member hasn't checked in yet today
     t = db.now()
     rows = []
-    for d in range(days, -1, -1):
+    for d in range(days, older_than_days, -1):
         if d == 0 and skip_today:
             continue
         day = t - timedelta(days=d)
@@ -38,11 +38,11 @@ def seed_checkins(conn, mission_id, crew_id, days=7):
         conn.execute(insert(db.checkins), rows)
 
 
-def seed_history(conn, mission_id, days=7):
-    """Hourly averages for the last `days` days, ending 3 hours ago (live data covers the rest)."""
+def seed_history(conn, mission_id, days=7, end=None):
+    """Hourly averages for `days` days, ending at `end` (default: 3 hours ago; live data covers the rest)."""
     crew_rows = {r.id: r for r in conn.execute(select(db.crew).where(db.crew.c.mission_id == mission_id))}
     sensors = list(conn.execute(select(db.sensors).where(db.sensors.c.mission_id == mission_id)))
-    end = db.now().replace(minute=0, second=0, microsecond=0) - timedelta(hours=3)
+    end = end or db.now().replace(minute=0, second=0, microsecond=0) - timedelta(hours=3)
     rows = []
     for s in sensors:
         rnd = random.Random(s.id * 104729)

@@ -9,7 +9,7 @@ Three checks per sensor, all explainable:
 import time
 from datetime import timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import insert, select, update
 
 from . import db
 from . import knowledge
@@ -96,7 +96,7 @@ def compute(mission_id):
                     latest_any[sid] = r
         crew_ids = [c.id for c in crew_rows]
         checks = list(conn.execute(select(db.checkins).where(
-            db.checkins.c.crew_id.in_(crew_ids or [-1]), db.checkins.c.ts >= t_now - timedelta(days=30))
+            db.checkins.c.crew_id.in_(crew_ids or [-1]), db.checkins.c.ts >= t_now - timedelta(days=120))
             .order_by(db.checkins.c.ts)))
 
     alerts = []
@@ -285,7 +285,40 @@ def compute(mission_id):
                 mission=dict(code=m.code, name=m.name, is_demo=bool(m.is_demo)),
                 mission_start=(ms.replace(tzinfo=timezone.utc) if ms and ms.tzinfo is None else ms).isoformat() if ms else None)
     _cache[mission_id] = (time.time(), data)
+    _record_alerts(mission_id, alerts, t_now)
     return data
+
+
+_last_log: dict[int, float] = {}
+LOGGED_KINDS = ("limit", "checkin", "prediction")
+
+
+def _record_alerts(mission_id, alerts, t_now):
+    """Keep a history of alerts: open a row when an alert appears, close it when it clears."""
+    if time.time() - _last_log.get(mission_id, 0) < 10:
+        return
+    _last_log[mission_id] = time.time()
+    current = {}
+    for a in alerts:
+        if a["kind"] in LOGGED_KINDS and a["severity"] in ("warning", "critical"):
+            current[f"{a['kind']}|{a['crew_id']}|{a['metric']}"] = a
+    try:
+        with db.engine.begin() as conn:
+            open_rows = {r.key: r for r in conn.execute(select(db.alert_log).where(
+                db.alert_log.c.mission_id == mission_id, db.alert_log.c.ended.is_(None)))}
+            for key, r in open_rows.items():
+                if key not in current:
+                    conn.execute(update(db.alert_log).where(db.alert_log.c.id == r.id).values(ended=t_now))
+                elif current[key]["severity"] == "critical" and r.severity != "critical":
+                    conn.execute(update(db.alert_log).where(db.alert_log.c.id == r.id).values(
+                        severity="critical", message=current[key]["message"]))
+            new = [dict(mission_id=mission_id, crew_id=a["crew_id"], key=k, kind=a["kind"], severity=a["severity"],
+                        metric=a["metric"], message=a["message"], hazard=a.get("hazard"), risk=a.get("risk"),
+                        started=t_now) for k, a in current.items() if k not in open_rows]
+            if new:
+                conn.execute(insert(db.alert_log), new)
+    except Exception:
+        pass
 
 
 def invalidate(mission_id=None):

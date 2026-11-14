@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { api, getMission, isHost, mpath, setToken } from '../api.js'
+import { api, download, getMission, isHost, mpath, setToken } from '../api.js'
 import { ENVS } from './Host.jsx'
 
 const TABS = ['Crew', 'Sensors', 'Limits', 'Readings', 'Simulator', 'Connect a sensor', 'Mission', 'Activity']
@@ -415,10 +415,20 @@ function MissionTab() {
         </div>
         <button className="btn gold">Save</button>
       </form>
+      <div className="editor">
+        <div className="k">Backup &amp; export</div>
+        <p className="sub">Download everything this mission has recorded. A full backup can be restored later as a new mission from <a href="#/host">Host / Join</a>. Backups never include passwords, sensor keys or private assistant chats.</p>
+        <div className="actions">
+          <button type="button" className="btn gold" onClick={() => download(mpath('/admin/export'), 'aura-backup.json').then(() => setMsg('Backup downloaded.')).catch(e => setMsg(e.message))}>Download full backup (JSON)</button>
+          <button type="button" className="btn" onClick={() => download(mpath('/admin/export?format=csv&what=checkins'), 'aura-checkins.csv').catch(e => setMsg(e.message))}>Check-ins (CSV)</button>
+          <button type="button" className="btn" onClick={() => download(mpath('/admin/export?format=csv&what=vitals'), 'aura-vitals.csv').catch(e => setMsg(e.message))}>Vitals history (CSV)</button>
+        </div>
+        <p className="sub small">Vitals history is kept for 90 days, check-ins and alerts for the life of the mission. Missions with no visitors for 90 days are removed — download a backup to keep them longer.</p>
+      </div>
       {!info.is_demo && (
         <div className="editor danger-zone">
           <div className="k">End mission</div>
-          <p className="sub">Hosted missions are also removed automatically after 7 days without visitors.</p>
+          <p className="sub">Download a backup first if you may want this data again.</p>
           <button className="btn danger" onClick={end}>End mission and delete its data</button>
         </div>
       )}

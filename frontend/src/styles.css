@@ -372,3 +372,23 @@ a.btn { text-decoration: none; text-align: center; display: inline-block; }
   .body-wrap { grid-template-columns: 1fr; justify-items: center; }
   .grid4 { grid-template-columns: 1fr; }
 }
+
+/* ---------- records ---------- */
+.records-filter { flex-wrap: wrap; }
+.sep { width: 1px; background: var(--line); margin: 0 4px; align-self: stretch; }
+.search { display: flex; gap: 8px; align-items: center; }
+.search input { width: 260px; }
+.rec-day { margin-top: 16px; }
+.records { list-style: none; margin: 6px 0 0; padding: 0; }
+.rec { display: grid; grid-template-columns: 64px 1fr; gap: 12px; padding: 10px 0 10px 12px; border-top: 1px solid var(--line); border-left: 2px solid var(--line); font-size: 13px; }
+.rec-warning { border-left-color: var(--warn); } .rec-critical { border-left-color: var(--crit); } .rec-watch { border-left-color: var(--gold); }
+.rec-time { color: var(--ink-3); font-size: 12px; padding-top: 2px; }
+.rec-title { font: 600 15px/1.3 var(--serif); margin-bottom: 3px; }
+.rec-sev { font: 500 10px/1 var(--sans); letter-spacing: 0.1em; text-transform: uppercase; margin-left: 10px; padding: 2px 7px; border-radius: 10px; border: 1px solid var(--line-strong); vertical-align: 2px; }
+.rec-sev.s-warning { color: var(--warn); border-color: var(--warn); } .rec-sev.s-critical { color: var(--crit); border-color: var(--crit); }
+.rec-vals { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--ink-2); }
+.rec-vals .st-warning b { color: var(--warn); } .rec-vals .st-critical b { color: var(--crit); }
+.rec-sym { color: var(--ink-3); font-size: 12px; margin-top: 3px; }
+.rec-note { color: var(--ink-2); font-style: italic; margin-top: 3px; }
+.hostjoin .restore { grid-column: 1 / -1; }
+.more { text-align: center; margin-top: 16px; }

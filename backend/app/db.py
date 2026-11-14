@@ -23,6 +23,7 @@ engine = create_engine(url, pool_pre_ping=True, future=True, pool_size=5, max_ov
 meta = MetaData()
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 DEMO_CODE = "DEMO"
+DEMO_HISTORY_DAYS = 60
 
 
 def now():
@@ -120,6 +121,19 @@ rollups = Table("rollups", meta,                              # hourly history k
 )
 Index("ix_rollups_sensor_hour", rollups.c.sensor_id, rollups.c.hour)
 
+alert_log = Table("alert_log", meta,                          # alert history for health records
+    Column("id", Integer, primary_key=True),
+    Column("mission_id", Integer, ForeignKey("missions.id", ondelete="CASCADE"), nullable=False),
+    Column("crew_id", Integer, nullable=True),
+    Column("key", String(80), nullable=False),
+    Column("kind", String(12)), Column("severity", String(10)), Column("metric", String(40)),
+    Column("message", Text), Column("hazard", String(20)), Column("risk", String(120)),
+    Column("started", DateTime(timezone=True), nullable=False),
+    Column("ended", DateTime(timezone=True), nullable=True),
+)
+Index("ix_alert_log_open", alert_log.c.mission_id, alert_log.c.ended)
+Index("ix_alert_log_crew", alert_log.c.crew_id, alert_log.c.started)
+
 users = Table("users", meta,                                  # platform team (can manage every mission)
     Column("id", Integer, primary_key=True),
     Column("username", String(40), nullable=False, unique=True),
@@ -188,9 +202,9 @@ def create_mission(conn, name, pw_hash, code=None, is_demo=False, demo_crew=True
         from .seed import seed_checkins, seed_history
         for cname, role, over in DEMO_CREW:
             cid = add_crew_member(conn, mid, cname, role, "Fictional demo crew member", over)
-            seed_checkins(conn, mid, cid, days=7)
+            seed_checkins(conn, mid, cid, days=DEMO_HISTORY_DAYS if is_demo else 7)
         if is_demo:
-            seed_history(conn, mid, days=7)
+            seed_history(conn, mid, days=DEMO_HISTORY_DAYS)
     return mid
 
 
@@ -214,11 +228,8 @@ def init_db():
             create_mission(conn, "AURA Demo Mission",
                            hash_password(os.getenv("ADMIN_PASSWORD", "aura-admin")),
                            code=DEMO_CODE, is_demo=True)
-        elif conn.execute(select(checkins.c.id).where(checkins.c.mission_id == demo.id)).first() is None:
-            from .seed import seed_checkins, seed_history   # demo created by an earlier version
-            for (cid,) in conn.execute(select(crew.c.id).where(crew.c.mission_id == demo.id)).all():
-                seed_checkins(conn, demo.id, cid, days=7)
-            seed_history(conn, demo.id, days=7)
+        else:
+            _extend_demo(conn, demo.id)
 
 
 def delete_mission(conn, mid):
@@ -227,9 +238,30 @@ def delete_mission(conn, mid):
     sids = select(sensors.c.id).where(sensors.c.mission_id == mid)
     conn.execute(delete(readings).where(readings.c.sensor_id.in_(sids)))
     conn.execute(delete(rollups).where(rollups.c.sensor_id.in_(sids)))
-    for t in (chats, audit, checkins, sensors, limits, crew):
+    for t in (chats, audit, checkins, alert_log, sensors, limits, crew):
         conn.execute(delete(t).where(t.c.mission_id == mid))
     conn.execute(delete(missions).where(missions.c.id == mid))
+
+
+def _extend_demo(conn, mid):
+    """Give a demo mission created by an earlier version DEMO_HISTORY_DAYS of past data."""
+    from sqlalchemy import func
+    from .seed import seed_checkins, seed_history
+    t = now()
+    first_ck = conn.execute(select(func.min(checkins.c.ts)).where(checkins.c.mission_id == mid)).scalar()
+    have_days = (t - (first_ck if first_ck.tzinfo else first_ck.replace(tzinfo=timezone.utc))).days if first_ck else -1
+    if have_days < DEMO_HISTORY_DAYS - 2:
+        for (cid,) in conn.execute(select(crew.c.id).where(crew.c.mission_id == mid)).all():
+            seed_checkins(conn, mid, cid, days=DEMO_HISTORY_DAYS, older_than_days=have_days)
+    sids = select(sensors.c.id).where(sensors.c.mission_id == mid)
+    first_h = conn.execute(select(func.min(rollups.c.hour)).where(rollups.c.sensor_id.in_(sids))).scalar()
+    if first_h is None:
+        seed_history(conn, mid, days=DEMO_HISTORY_DAYS)
+    else:
+        first_h = first_h if first_h.tzinfo else first_h.replace(tzinfo=timezone.utc)
+        missing = DEMO_HISTORY_DAYS - (t - first_h).days
+        if missing > 2:
+            seed_history(conn, mid, days=missing, end=first_h)
 
 
 def _upgrade():

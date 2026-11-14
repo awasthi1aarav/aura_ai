@@ -16,7 +16,8 @@ built in. Known limits follow.
   HMAC-signed tokens that expire after 12 hours.
 - **Viewing:** anyone with a mission's join code can watch it and use its assistant. That's needed for
   judging, and the demo data is fictional.
-- Hosting is limited to 3 new missions per IP per hour (300 in total). Idle missions are deleted after 7 days.
+- Hosting and restoring are limited to 3 new missions per IP per hour (300 in total). Idle missions are deleted after 90 days.
+- Backups need the mission password. They never contain passwords, sensor API keys or private chats, and every export is recorded in the activity log. A restore always creates a new mission and validates every field.
 - **Sensors:** each sensor has its own API key, compared in constant time and replaceable at any time.
   A disabled sensor's data is rejected.
 

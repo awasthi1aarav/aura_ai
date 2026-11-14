@@ -157,6 +157,7 @@ function CheckInForm({ person, meta, onDone }) {
   )
 }
 
+const RANGE_LABEL = { '24h': '24 hours', '7d': '7 days', '30d': '30 days', '90d': '90 days' }
 const CHART_METRICS = ['heart_rate', 'spo2', 'bp_sys', 'body_temp', 'resp_rate', 'glucose', 'sleep_hours', 'mood']
 
 function History({ person, meta }) {
@@ -164,10 +165,11 @@ function History({ person, meta }) {
   const [range, setRange] = useState('24h')
   const [data, setData] = useState(null)
   const checkinMetric = ['glucose', 'sleep_hours', 'mood'].includes(metric)
+  useEffect(() => { if (checkinMetric && range === '24h') setRange('7d') }, [checkinMetric, range])
   useEffect(() => {
     let alive = true
     setData(null)
-    api(mpath(`/history?metric=${metric}&crew_id=${person.id}&range=${checkinMetric ? '7d' : range}`))
+    api(mpath(`/history?metric=${metric}&crew_id=${person.id}&range=${checkinMetric && range === '24h' ? '7d' : range}`))
       .then(d => alive && setData(d.points)).catch(() => alive && setData([]))
     return () => { alive = false }
   }, [metric, range, person.id, checkinMetric])
@@ -179,14 +181,96 @@ function History({ person, meta }) {
         <div className="scen small-scen">
           {CHART_METRICS.map(m => <button key={m} className={metric === m ? 'on' : ''} onClick={() => setMetric(m)}>{meta?.metrics?.[m]?.label || m}</button>)}
         </div>
-        {!checkinMetric && (
-          <div className="scen small-scen">
-            {['24h', '7d'].map(r => <button key={r} className={range === r ? 'on' : ''} onClick={() => setRange(r)}>{r === '24h' ? '24 hours' : '7 days'}</button>)}
-          </div>
-        )}
+        <div className="scen small-scen">
+          {(checkinMetric ? ['7d', '30d', '90d'] : ['24h', '7d', '30d', '90d']).map(r => (
+            <button key={r} className={range === r ? 'on' : ''} onClick={() => setRange(r)}>{RANGE_LABEL[r]}</button>
+          ))}
+        </div>
       </div>
       {data === null ? <div className="chart-empty">Loading…</div> : <Chart points={data} limit={spec} unit={spec?.unit} decimals={dec} />}
-      <p className="sub small">{checkinMetric ? 'Daily values from the self check-in, last 7 days.' : 'Hourly averages.'} Shaded band = healthy range.</p>
+      <p className="sub small">{checkinMetric ? 'Values from each self check-in.' : ['30d', '90d'].includes(range) ? 'Daily averages.' : 'Hourly averages.'} Shaded band = healthy range. History is kept for 90 days.</p>
+    </div>
+  )
+}
+
+const SEV_WORD = { ok: 'Normal', warning: 'Outside range', critical: 'Needs attention', watch: 'Watch' }
+
+function Records({ person }) {
+  const [days, setDays] = useState(30)
+  const [kind, setKind] = useState('all')
+  const [q, setQ] = useState('')
+  const [query, setQuery] = useState('')
+  const [rows, setRows] = useState(null)
+  const [shown, setShown] = useState(20)
+  useEffect(() => {
+    let alive = true
+    setRows(null); setShown(20)
+    api(mpath(`/records?crew_id=${person.id}&days=${days}&kind=${kind}&q=${encodeURIComponent(query)}`))
+      .then(r => alive && setRows(r)).catch(() => alive && setRows([]))
+    return () => { alive = false }
+  }, [person.id, days, kind, query])
+  const groups = useMemo(() => {
+    const g = []
+    for (const r of (rows || []).slice(0, shown)) {
+      const day = new Date(r.ts).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })
+      if (!g.length || g[g.length - 1].day !== day) g.push({ day, items: [] })
+      g[g.length - 1].items.push(r)
+    }
+    return g
+  }, [rows, shown])
+  return (
+    <div>
+      <form className="row-head records-filter" onSubmit={e => { e.preventDefault(); setQuery(q) }}>
+        <div className="scen small-scen">
+          {[7, 30, 90].map(d => <button type="button" key={d} className={days === d ? 'on' : ''} onClick={() => setDays(d)}>{d} days</button>)}
+          <span className="sep" />
+          {[['all', 'Everything'], ['checkin', 'Check-ins'], ['alert', 'Alerts']].map(([k, l]) => (
+            <button type="button" key={k} className={kind === k ? 'on' : ''} onClick={() => setKind(k)}>{l}</button>
+          ))}
+        </div>
+        <div className="search">
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search symptoms, notes, alerts…" />
+          <button className="btn">Search</button>
+          {query && <button type="button" className="link" onClick={() => { setQ(''); setQuery('') }}>Clear</button>}
+        </div>
+      </form>
+      {rows === null && <div className="chart-empty">Loading…</div>}
+      {rows && rows.length === 0 && <div className="chart-empty">No records for this period.</div>}
+      {groups.map(g => (
+        <div key={g.day} className="rec-day">
+          <div className="k">{g.day}</div>
+          <ul className="records">
+            {g.items.map((r, i) => (
+              <li key={i} className={`rec rec-${r.severity}`}>
+                <span className="rec-time mono">{new Date(r.ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</span>
+                {r.type === 'checkin' ? (
+                  <div>
+                    <div className="rec-title">Check-in{r.severity !== 'ok' && <span className={`rec-sev s-${r.severity}`}>{SEV_WORD[r.severity]}</span>}</div>
+                    <div className="rec-vals">
+                      {r.values.map(v => <span key={v.metric} className={`st-${v.status}`}>{v.label} <b className="mono">{fmt(v.value, v.metric)}</b> {v.unit}</span>)}
+                      {r.exercise_min != null && <span>Exercise <b className="mono">{Math.round(r.exercise_min)}</b> min</span>}
+                    </div>
+                    {r.symptoms.length > 0 && <div className="rec-sym">Symptoms: {r.symptoms.join(', ')}</div>}
+                    {r.note && <div className="rec-note">“{r.note}”</div>}
+                  </div>
+                ) : (
+                  <div>
+                    <div className="rec-title">Alert<span className={`rec-sev s-${r.severity}`}>{r.severity}</span></div>
+                    <div>{r.message}</div>
+                    <div className="rec-sym">
+                      {r.hazard && <>{r.hazard} · </>}{r.risk && <>{r.risk} · </>}
+                      {r.ended ? `cleared ${new Date(r.ended).toLocaleString(undefined, { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' })}` : 'still active'}
+                    </div>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+      {rows && rows.length > shown && (
+        <div className="more"><button className="btn" onClick={() => setShown(n => n + 30)}>Show older records ({rows.length - shown} more)</button></div>
+      )}
     </div>
   )
 }
@@ -238,6 +322,11 @@ function Profile({ person, meta, reload }) {
       <section className="panel">
         <div className="panel-head"><h2>Trends</h2></div>
         <History person={person} meta={meta} />
+      </section>
+
+      <section className="panel">
+        <div className="panel-head"><h2>Health records</h2><span className="sub">Every check-in and alert, kept for this mission</span></div>
+        <Records person={person} />
       </section>
     </div>
   )

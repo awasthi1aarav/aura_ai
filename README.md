@@ -16,7 +16,7 @@ Anyone can **host a mission**: give it a name and a password, and AURA creates a
 with its own crew, sensors, limits, simulator scenarios, assistant chats and activity log. Share the
 6-character **join code** or the link `…/#/m/CODE`. Anyone with it can watch the dashboard and use
 the assistant; changing anything needs the mission password. Changes in one mission never affect
-another. A shared **Demo mission** (`DEMO`) is the default page. Missions with no visitors for 7 days
+another. A shared **Demo mission** (`DEMO`) is the default page. Missions with no visitors for 90 days
 are removed automatically.
 
 ## Built around NASA's challenge
@@ -29,7 +29,8 @@ are removed automatically.
 | Clickable human body figure | **Interactive body map**: each system shows status, readings, what spaceflight does to it, how to measure it, and the HRP risk |
 | Guidance; when to involve flight surgeons | **Action cards** on every alert: what to do now and when to escalate |
 | Prompt measurements as a routine; gamification | Check-in reminders, **today's routine** checklist, **streaks** and a **health score** |
-| Charts over time; color coding | **24-hour / 7-day trend charts** with the healthy range shaded; status colors throughout |
+| Charts over time; color coding | **Trend charts for 24 h, 7, 30 and 90 days** with the healthy range shaded; status colors throughout |
+| (keeping records) | **Health records**: a searchable timeline of every check-in, symptom, note and alert per astronaut; **backup download** (JSON, or CSV for spreadsheets) and **restore** into a new mission |
 | Different environments | Each mission is a **space station, deep-space spacecraft, lunar base, lunar rover or Mars base**, with its gravity and signal delay shown and given to the assistant |
 
 ## The four parts

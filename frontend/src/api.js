@@ -87,3 +87,19 @@ export function sinceMission(iso) {
   const ss = String(s % 60).padStart(2, '0')
   return `${d}d ${hh}:${mm}:${ss}`
 }
+
+// Authenticated file download (backups / CSV)
+export async function download(path, fallbackName) {
+  const headers = { 'X-Client-Id': clientId() }
+  const token = tokenFor(path)
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const res = await fetch(path, { headers })
+  if (!res.ok) throw new Error(res.status === 401 ? 'Please unlock admin again.' : res.statusText)
+  const cd = res.headers.get('Content-Disposition') || ''
+  const name = (cd.match(/filename="([^"]+)"/) || [])[1] || fallbackName
+  const url = URL.createObjectURL(await res.blob())
+  const a = document.createElement('a')
+  a.href = url; a.download = name
+  document.body.appendChild(a); a.click(); a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 2000)
+}
