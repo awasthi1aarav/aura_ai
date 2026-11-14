@@ -3,7 +3,8 @@
 As the NASA Space Apps rules require, this page states where and how AI was used, and what the team did.
 
 ## How AURA was built
-AURA was built by **Team Orbital Five** working with an AI coding assistant (**Claude, by Anthropic**).
+AURA was built by **Team Orbital Five** (team lead Aarav Awasthi and two QA testers) working with an
+AI coding assistant (**Claude, by Anthropic**).
 The team decided *what* to build and *why*: the product, its features, its priorities and every design
 choice. Claude wrote most of the source code from those decisions. The team reviewed it, tried it as
 users, reported problems and asked for changes, and set up and runs all of the infrastructure.
@@ -28,11 +29,11 @@ users, reported problems and asked for changes, and set up and runs all of the i
 - Asked whether one user could see another's data and whether the app would satisfy a cybersecurity
   review, which led to private chats, rate limits, accounts, an activity log and the security headers.
 - Asked for a full stress test of the live system.
-- Tested the live app and caught real problems, e.g. the assistant failing to answer and not being
+- The QA testers and team lead tested the live app and caught real problems, e.g. the assistant failing to answer and not being
   able to explain the simulation. Both were fixed.
 - Kept AI use honest: the team chose to disclose AI-generated work accurately.
 
-**Infrastructure (set up and run by the team)**
+**Infrastructure (set up and run by the team lead)**
 - GitHub repository, Render hosting with automatic deploys, Supabase database, Google Gemini API key
   (rotated for security), and the cron-job.org keep-alive job.
 
