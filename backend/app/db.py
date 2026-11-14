@@ -107,11 +107,22 @@ checkins = Table("checkins", meta,                            # astronaut daily 
     Column("crew_id", Integer, ForeignKey("crew.id", ondelete="CASCADE"), nullable=False),
     Column("ts", DateTime(timezone=True), nullable=False, default=now),
     Column("glucose", Float), Column("sleep_hours", Float), Column("mood", Float),
+    Column("connection", Float), Column("stress", Float),
     Column("exercise_min", Float),
     Column("symptoms", Text, default=""),                     # comma-separated tags
     Column("note", Text, default=""),
 )
 Index("ix_checkins_crew_ts", checkins.c.crew_id, checkins.c.ts)
+
+wellbeing = Table("wellbeing", meta,                          # contact with home, crew time, support requests
+    Column("id", Integer, primary_key=True),
+    Column("mission_id", Integer, ForeignKey("missions.id", ondelete="CASCADE"), nullable=False),
+    Column("crew_id", Integer, ForeignKey("crew.id", ondelete="CASCADE"), nullable=False),
+    Column("ts", DateTime(timezone=True), nullable=False, default=now),
+    Column("kind", String(20), nullable=False),               # call_home | crew_time | support_request
+    Column("note", Text, default=""),
+)
+Index("ix_wellbeing_crew_ts", wellbeing.c.crew_id, wellbeing.c.ts)
 
 rollups = Table("rollups", meta,                              # hourly history kept for 7 days
     Column("id", Integer, primary_key=True),
@@ -238,7 +249,7 @@ def delete_mission(conn, mid):
     sids = select(sensors.c.id).where(sensors.c.mission_id == mid)
     conn.execute(delete(readings).where(readings.c.sensor_id.in_(sids)))
     conn.execute(delete(rollups).where(rollups.c.sensor_id.in_(sids)))
-    for t in (chats, audit, checkins, alert_log, sensors, limits, crew):
+    for t in (chats, audit, checkins, alert_log, wellbeing, sensors, limits, crew):
         conn.execute(delete(t).where(t.c.mission_id == mid))
     conn.execute(delete(missions).where(missions.c.id == mid))
 
@@ -246,7 +257,9 @@ def delete_mission(conn, mid):
 def _extend_demo(conn, mid):
     """Give a demo mission created by an earlier version DEMO_HISTORY_DAYS of past data."""
     from sqlalchemy import func
-    from .seed import seed_checkins, seed_history
+    from .seed import backfill_wellbeing, seed_checkins, seed_history
+    if conn.execute(select(wellbeing.c.id).where(wellbeing.c.mission_id == mid)).first() is None:
+        backfill_wellbeing(conn, mid)
     t = now()
     first_ck = conn.execute(select(func.min(checkins.c.ts)).where(checkins.c.mission_id == mid)).scalar()
     have_days = (t - (first_ck if first_ck.tzinfo else first_ck.replace(tzinfo=timezone.utc))).days if first_ck else -1
@@ -271,6 +284,11 @@ def _upgrade():
     if "environment" not in cols:
         with engine.begin() as conn:
             conn.execute(text("ALTER TABLE missions ADD COLUMN environment VARCHAR(20) DEFAULT 'spacecraft'"))
+    ck_cols = {c["name"] for c in inspect(engine).get_columns("checkins")}
+    for col in ("connection", "stress"):
+        if col not in ck_cols:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE checkins ADD COLUMN {col} FLOAT"))
     with engine.begin() as conn:  # limits for metrics added later
         for (mid,) in conn.execute(select(missions.c.id)).all():
             have = {r.metric for r in conn.execute(select(limits.c.metric).where(limits.c.mission_id == mid))}

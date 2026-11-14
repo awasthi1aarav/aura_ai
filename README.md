@@ -31,6 +31,8 @@ are removed automatically.
 | Prompt measurements as a routine; gamification | Check-in reminders, **today's routine** checklist, **streaks** and a **health score** |
 | Charts over time; color coding | **Trend charts for 24 h, 7, 30 and 90 days** with the healthy range shaded; status colors throughout |
 | (keeping records) | **Health records**: a searchable timeline of every check-in, symptom, note and alert per astronaut; **backup download** (JSON, or CSV for spreadsheets) and **restore** into a new mission |
+| Behavioral health (isolation, low mood) | **Wellbeing panel**: mood, connection and stress trends from the check-in, calls home and crew time, pattern alerts (e.g. low mood 2 of 3 days), one-tap **request for a private talk with the flight psychologist**, and a supportive assistant with a safety response that never depends on the AI service |
+| Distance from Earth | **Earth panel**: live distance, one-way signal time, question-and-answer delay, time to return to Earth and mission day, per environment (planet positions from a simplified orbit model) |
 | Different environments | Each mission is a **space station, deep-space spacecraft, lunar base, lunar rover or Mars base**, with its gravity and signal delay shown and given to the assistant |
 
 ## The four parts

@@ -24,6 +24,8 @@ METRIC_HAZARD = {
     "glucose": ("distance", "Risk of Inadequate Food and Nutrition"),
     "sleep_hours": ("isolation", "Risk of Inadequate Sleep and Irregular Schedules"),
     "mood": ("isolation", "Risk of Behavioral Changes and Psychiatric Disorders"),
+    "connection": ("isolation", "Risk of Behavioral Changes and Psychiatric Disorders"),
+    "stress": ("isolation", "Risk of Behavioral Changes and Psychiatric Disorders"),
     "cabin_co2": ("environment", None),
     "cabin_o2": ("environment", "Risk of Hypoxia"),
     "cabin_pressure": ("environment", "Risk of Decompression Sickness"),
@@ -80,6 +82,20 @@ GUIDANCE = {
              "Use a scheduled private call home if available"],
         escalate="Talk to the flight surgeon or psychologist if low mood lasts more than 2 days, "
                  "or at once if feeling unsafe.")},
+    "wellbeing": {"low": dict(
+        now=["Reach out: call home or spend time with a crewmate today", "Keep the routine: sleep, meals, exercise",
+             "Use the Wellbeing panel to request a private talk"],
+        escalate="Contact the flight psychologist. If there are thoughts of self-harm, tell a crewmate "
+                 "now and contact the flight surgeon immediately.")},
+    "connection": {"low": dict(
+        now=["Plan a call or message home today", "Share a meal, game or film with a crewmate",
+             "Spend a few minutes looking at Earth or familiar photos"],
+        escalate="Talk to the flight psychologist if feeling isolated for more than a few days, "
+                 "or at once if feeling unsafe.")},
+    "stress": {"high": dict(
+        now=["Pause for 5 minutes of slow breathing", "Break the task into smaller steps; ask a crewmate for help",
+             "Protect sleep and exercise time"],
+        escalate="Talk to the flight psychologist if stress stays high for several days or affects sleep or work.")},
     "cabin_co2": {"high": dict(
         now=["Check CO₂ scrubber status", "Increase ventilation / fans", "Watch crew for headache and fatigue"],
         escalate="Notify mission control if above 3 mmHg (NASA-STD-3001 1-hour limit).")},
@@ -100,6 +116,70 @@ GUIDANCE = {
         now=["Move crew to the most shielded area", "Postpone spacewalks", "Log exposure time"],
         escalate="Notify mission control and the flight surgeon at once during a solar particle event.")},
 }
+
+# ---------- distance from Earth ----------
+import math
+from datetime import datetime, timezone
+
+AU_KM = 149_597_870.7
+C_KM_S = 299_792.458
+J2000 = datetime(2000, 1, 1, 12, tzinfo=timezone.utc)
+MOON_KM = 384_400
+STATION_KM = 420
+TRANSIT_DAYS = 210            # assumed Earth-to-Mars transfer for a deep-space crew vehicle
+
+
+def _lon(t, l0, period):
+    return math.radians((l0 + 360.0 * (t - J2000).total_seconds() / 86400 / period) % 360)
+
+
+def _earth(t):
+    return 1.0, _lon(t, 100.464, 365.256)
+
+
+def _mars(t):
+    return 1.524, _lon(t, 355.453, 686.98)
+
+
+def _dist(a, b):
+    (r1, l1), (r2, l2) = a, b
+    return math.sqrt(r1 * r1 + r2 * r2 - 2 * r1 * r2 * math.cos(l1 - l2)) * AU_KM
+
+
+def _fmt_dur(s):
+    if s < 60:
+        return f"{s:.1f} s" if s >= 1 else f"{s * 1000:.0f} ms"
+    return f"{s / 60:.1f} min"
+
+
+def earth_info(env_key, mission_start, now):
+    """Where the crew is relative to Earth. Planet positions use simplified circular orbits."""
+    day = max(0.0, (now - mission_start).total_seconds() / 86400) if mission_start else 0.0
+    extra = None
+    if env_key == "station":
+        km, back = STATION_KM, "About 6\u201324 hours (undock, de-orbit and land)"
+        note = "Low Earth orbit, about 420 km up"
+    elif env_key in ("lunar_base", "lunar_rover"):
+        km, back = MOON_KM, "About 3 days" + (" (drive back to base first)" if env_key == "lunar_rover" else "")
+        note = "Average Earth\u2013Moon distance"
+    elif env_key == "mars_base":
+        km = _dist(_earth(now), _mars(now))
+        back = "About 7\u20139 months of travel, after waiting for a launch window (about every 26 months)"
+        note = "Estimated from simplified planetary orbits"
+    else:  # deep-space transit to Mars
+        f = min(1.0, day / TRANSIT_DAYS)
+        launch = mission_start or now
+        r = 1.0 + 0.524 * (1 - math.cos(math.pi * f)) / 2
+        ship = (r, _earth(launch)[1] + math.pi * f)
+        km = _dist(_earth(now), ship)
+        left = max(0, TRANSIT_DAYS - day)
+        back = "Months \u2014 a deep-space ship can't turn around; a return follows a planned trajectory"
+        note = f"Estimated position on a {TRANSIT_DAYS}-day Earth\u2013Mars transfer"
+        extra = f"Mars arrival in about {left:.0f} days" if left > 0 else "At Mars"
+    light = km / C_KM_S
+    return dict(distance_km=round(km), light_one_way=_fmt_dur(light), light_round_trip=_fmt_dur(2 * light),
+                light_seconds=round(light, 3), return_time=back, mission_day=int(day) + 1, note=note, extra=extra)
+
 
 ENVIRONMENTS = {
     "station": dict(label="Space station (low Earth orbit)", gravity="Microgravity",

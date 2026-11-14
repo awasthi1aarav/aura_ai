@@ -123,7 +123,7 @@ export default function Assistant({ data, initialCrew }) {
           )}
           {msgs.map((m, i) => (
             <div key={i} className={`msg ${m.role}`}>
-              <div className="who">{m.role === 'user' ? 'You' : 'AURA'}{m.source === 'offline' && <span className="badge">offline mode</span>}</div>
+              <div className="who">{m.role === 'user' ? 'You' : 'AURA'}{m.source === 'offline' && <span className="badge">offline mode</span>}{m.source === 'safety' && <span className="badge">support</span>}</div>
               <div className="body">{m.role === 'assistant' ? <div className="fmt">{render(m.text)}</div> : m.text}</div>
             </div>
           ))}

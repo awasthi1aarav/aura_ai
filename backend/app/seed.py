@@ -2,7 +2,7 @@
 Everything here is simulated and labelled as demo data in the interface."""
 import math
 import random
-from datetime import timedelta
+from datetime import timedelta, timezone
 
 from sqlalchemy import insert, select
 
@@ -33,9 +33,22 @@ def seed_checkins(conn, mission_id, crew_id, days=7, older_than_days=-1):
         rows.append(dict(mission_id=mission_id, crew_id=crew_id, ts=ts,
                          glucose=round(rnd.gauss(94, 7)), sleep_hours=round(max(3.5, sleep), 1),
                          mood=max(2, min(5, round(rnd.gauss(4.1, 0.6)) - (1 if sleepy and d <= 1 else 0))),
+                         connection=max(2, min(5, round(rnd.gauss(4.0, 0.6)) - (1 if sleepy and d <= 2 else 0))),
+                         stress=max(1, min(5, round(rnd.gauss(2.2, 0.6)) + (1 if sleepy and d <= 2 else 0))),
                          exercise_min=round(max(0, rnd.gauss(110, 20))), symptoms=",".join(sym), note=""))
     if rows:
         conn.execute(insert(db.checkins), rows)
+    ev = []
+    for d in range(days, older_than_days, -1):        # calls home about twice a week, crew time most days
+        day = t - timedelta(days=d)
+        if d > 0 and rnd.random() < (0.12 if sleepy else 0.3):
+            ev.append(dict(mission_id=mission_id, crew_id=crew_id, kind="call_home", note="",
+                           ts=day.replace(hour=19, minute=rnd.randint(0, 50), second=0, microsecond=0)))
+        if d > 0 and rnd.random() < 0.6:
+            ev.append(dict(mission_id=mission_id, crew_id=crew_id, kind="crew_time", note="",
+                           ts=day.replace(hour=20, minute=rnd.randint(0, 50), second=0, microsecond=0)))
+    if ev:
+        conn.execute(insert(db.wellbeing), ev)
 
 
 def seed_history(conn, mission_id, days=7, end=None):
@@ -67,3 +80,31 @@ def seed_history(conn, mission_id, days=7, end=None):
                              max=round(v + noise, d), n=720))
     for i in range(0, len(rows), 2000):
         conn.execute(insert(db.rollups), rows[i:i + 2000])
+
+
+def backfill_wellbeing(conn, mission_id):
+    """Demo missions made before the wellbeing feature: add connection/stress values and contact events."""
+    from sqlalchemy import update
+    crew = conn.execute(select(db.crew.c.id, db.crew.c.name).where(db.crew.c.mission_id == mission_id)).all()
+    t = db.now()
+    for cid, name in crew:
+        rnd = random.Random(cid * 31337)
+        sleepy = "Rahman" in name
+        for ck in conn.execute(select(db.checkins.c.id, db.checkins.c.ts).where(
+                db.checkins.c.crew_id == cid, db.checkins.c.connection.is_(None))).all():
+            ts = ck.ts if ck.ts.tzinfo else ck.ts.replace(tzinfo=timezone.utc)
+            recent = (t - ts).days <= 2
+            conn.execute(update(db.checkins).where(db.checkins.c.id == ck.id).values(
+                connection=max(2, min(5, round(rnd.gauss(4.0, 0.6)) - (1 if sleepy and recent else 0))),
+                stress=max(1, min(5, round(rnd.gauss(2.2, 0.6)) + (1 if sleepy and recent else 0)))))
+        ev = []
+        for d in range(60, 0, -1):
+            day = t - timedelta(days=d)
+            if rnd.random() < (0.12 if sleepy else 0.3):
+                ev.append(dict(mission_id=mission_id, crew_id=cid, kind="call_home", note="",
+                               ts=day.replace(hour=19, minute=rnd.randint(0, 50), second=0, microsecond=0)))
+            if rnd.random() < 0.6:
+                ev.append(dict(mission_id=mission_id, crew_id=cid, kind="crew_time", note="",
+                               ts=day.replace(hour=20, minute=rnd.randint(0, 50), second=0, microsecond=0)))
+        if ev:
+            conn.execute(insert(db.wellbeing), ev)

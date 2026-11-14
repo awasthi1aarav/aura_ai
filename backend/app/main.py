@@ -291,6 +291,8 @@ class CheckIn(BaseModel):
     glucose: Optional[float] = Field(None, ge=20, le=600)
     sleep_hours: Optional[float] = Field(None, ge=0, le=24)
     mood: Optional[int] = Field(None, ge=1, le=5)
+    connection: Optional[int] = Field(None, ge=1, le=5)
+    stress: Optional[int] = Field(None, ge=1, le=5)
     exercise_min: Optional[float] = Field(None, ge=0, le=600)
     symptoms: list[str] = Field([], max_length=12)
     note: str = Field("", max_length=300)
@@ -307,7 +309,8 @@ def checkin(body: CheckIn, request: Request, m=Depends(mission)):
         _owned(conn, db.crew, body.crew_id, m.id)
         conn.execute(insert(db.checkins).values(
             mission_id=m.id, crew_id=body.crew_id, ts=db.now(), glucose=body.glucose,
-            sleep_hours=body.sleep_hours, mood=body.mood, exercise_min=body.exercise_min,
+            sleep_hours=body.sleep_hours, mood=body.mood, connection=body.connection, stress=body.stress,
+            exercise_min=body.exercise_min,
             symptoms=",".join(body.symptoms), note=body.note.strip()))
     analysis.invalidate(m.id)
     _touch(m.id)
@@ -321,8 +324,30 @@ def list_checkins(crew_id: int, m=Depends(mission)):
         rows = conn.execute(select(db.checkins).where(db.checkins.c.crew_id == crew_id)
                             .order_by(db.checkins.c.ts.desc()).limit(30))
         return [dict(id=r.id, ts=r.ts.isoformat(), glucose=r.glucose, sleep_hours=r.sleep_hours, mood=r.mood,
+                     connection=r.connection, stress=r.stress,
                      exercise_min=r.exercise_min, symptoms=[x for x in (r.symptoms or "").split(",") if x],
                      note=r.note) for r in rows]
+
+
+class WellbeingIn(BaseModel):
+    crew_id: int
+    kind: str = Field(pattern="^(call_home|crew_time|support_request)$")
+    note: str = Field("", max_length=300)
+
+
+@app.post("/api/m/{code}/wellbeing")
+def log_wellbeing(body: WellbeingIn, request: Request, m=Depends(mission)):
+    """Log contact with home or crew time, or request a private talk with the flight psychologist."""
+    if not limiter.hit(f"wellbeing:{client_ip(request)}", 30, 3600):
+        raise HTTPException(429, "Too many entries. Try again later.")
+    with db.engine.begin() as conn:
+        _owned(conn, db.crew, body.crew_id, m.id)
+        conn.execute(insert(db.wellbeing).values(mission_id=m.id, crew_id=body.crew_id, ts=db.now(),
+                                                 kind=body.kind, note=body.note.strip()))
+    if body.kind == "support_request":
+        log_action(m.id, "crew", client_ip(request), "support requested")
+    analysis.invalidate(m.id)
+    return {"ok": True}
 
 
 RANGES = {"24h": 1, "7d": 7, "30d": 30, "90d": 90}
@@ -393,6 +418,14 @@ def records(crew_id: int, days: int = 30, q: str = "", kind: str = "all", m=Depe
                 out.append(dict(type="checkin", ts=r.ts.isoformat(), values=vals, exercise_min=r.exercise_min,
                                 symptoms=[x for x in (r.symptoms or "").split(",") if x], note=r.note or "",
                                 severity="critical" if "critical" in flags else "warning" if flags else "ok"))
+        if kind in ("all", "wellbeing"):
+            labels = {"call_home": "Called home", "crew_time": "Time with crew",
+                      "support_request": "Requested a private talk with the flight psychologist"}
+            for r in conn.execute(select(db.wellbeing).where(db.wellbeing.c.crew_id == crew_id,
+                                                             db.wellbeing.c.ts >= since)
+                                  .order_by(db.wellbeing.c.ts.desc()).limit(500)):
+                out.append(dict(type="wellbeing", ts=r.ts.isoformat(), kind=r.kind, message=labels.get(r.kind, r.kind),
+                                note=r.note or "", severity="watch" if r.kind == "support_request" else "ok"))
         if kind in ("all", "alert"):
             for r in conn.execute(select(db.alert_log).where(db.alert_log.c.crew_id == crew_id,
                                                              db.alert_log.c.started >= since)

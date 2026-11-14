@@ -1,16 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { api, fmt, getMission, mpath } from '../api.js'
 import Chart from './Chart.jsx'
+import { Spark } from './Dashboard.jsx'
 
 const RANK = { critical: 3, warning: 2, watch: 1, ok: 0, nodata: -1, stale: -1 }
 const worst = list => list.reduce((w, s) => (RANK[s] ?? -1) > (RANK[w] ?? -1) ? s : w, 'nodata')
 
 // Body systems: what each one does in space, which readings describe it, and the NASA HRP risk.
 const SYSTEMS = [
-  { key: 'brain', label: 'Brain & mind', metrics: ['mood', 'sleep_hours'], cx: 96, cy: 28, risk: 'Risk of Behavioral Changes and Psychiatric Disorders',
+  { key: 'brain', label: 'Brain & mind', metrics: ['mood', 'connection', 'stress', 'sleep_hours'], cx: 96, cy: 28, risk: 'Risk of Behavioral Changes and Psychiatric Disorders',
     hazard: 'Isolation and confinement',
     space: 'Months of isolation, confinement and shifting work schedules can disturb sleep and lower mood, which in turn affects alertness and teamwork.',
-    measure: 'Log hours slept and rate your mood (1–5) in the morning check-in.' },
+    measure: 'Log hours slept and rate mood, connection and stress (1–5) in the morning check-in.' },
   { key: 'eyes', label: 'Eyes & vision', metrics: [], symptom: 'eye or vision change', cx: 109, cy: 40, risk: 'Risk of Spaceflight Associated Neuro-ocular Syndrome (SANS)',
     hazard: 'Gravity fields',
     space: 'In weightlessness, body fluids shift toward the head. This is linked to changes in the eye and vision during long missions (SANS).',
@@ -108,8 +109,24 @@ function SystemPanel({ sys, person }) {
   )
 }
 
+function Rating({ label, hint, value, onChange }) {
+  return (
+    <div className="mood">
+      <span className="lbl">{label}</span>
+      <div className="mood-row">
+        {[1, 2, 3, 4, 5].map(n => (
+          <button type="button" key={n} className={value === n ? 'on' : ''} onClick={() => onChange(value === n ? 0 : n)}
+                  aria-label={`${label} ${n} of 5`}>{n}</button>
+        ))}
+      </div>
+      <span className="u">{hint}</span>
+    </div>
+  )
+}
+
 function CheckInForm({ person, meta, onDone }) {
-  const [f, setF] = useState({ glucose: '', sleep_hours: '', mood: 0, exercise_min: '', symptoms: [], note: '' })
+  const blank = { glucose: '', sleep_hours: '', mood: 0, connection: 0, stress: 0, exercise_min: '', symptoms: [], note: '' }
+  const [f, setF] = useState(blank)
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
   const toggle = s => setF({ ...f, symptoms: f.symptoms.includes(s) ? f.symptoms.filter(x => x !== s) : [...f.symptoms, s] })
@@ -120,9 +137,10 @@ function CheckInForm({ person, meta, onDone }) {
     try {
       await api(mpath('/checkin'), { method: 'POST', body: {
         crew_id: person.id, glucose: num(f.glucose), sleep_hours: num(f.sleep_hours), mood: f.mood || null,
+        connection: f.connection || null, stress: f.stress || null,
         exercise_min: num(f.exercise_min), symptoms: f.symptoms, note: f.note } })
       setMsg('Check-in saved. AURA has updated your status.')
-      setF({ glucose: '', sleep_hours: '', mood: 0, exercise_min: '', symptoms: [], note: '' })
+      setF(blank)
       onDone()
     } catch (er) { setMsg(er.message) } finally { setBusy(false) }
   }
@@ -132,15 +150,11 @@ function CheckInForm({ person, meta, onDone }) {
         <label><span>Blood sugar <span className="u">mg/dL</span></span><input type="number" min="20" max="600" step="1" value={f.glucose} onChange={e => setF({ ...f, glucose: e.target.value })} placeholder="e.g. 92" /></label>
         <label><span>Sleep last night <span className="u">hours</span></span><input type="number" min="0" max="24" step="0.1" value={f.sleep_hours} onChange={e => setF({ ...f, sleep_hours: e.target.value })} placeholder="e.g. 7.5" /></label>
         <label><span>Exercise yesterday <span className="u">min</span></span><input type="number" min="0" max="600" step="5" value={f.exercise_min} onChange={e => setF({ ...f, exercise_min: e.target.value })} placeholder="e.g. 90" /></label>
-        <div className="mood">
-          <span className="lbl">Mood</span>
-          <div className="mood-row">
-            {[1, 2, 3, 4, 5].map(n => (
-              <button type="button" key={n} className={f.mood === n ? 'on' : ''} onClick={() => setF({ ...f, mood: n })} aria-label={`Mood ${n} of 5`}>{n}</button>
-            ))}
-          </div>
-          <span className="u">1 low · 5 great</span>
-        </div>
+      </div>
+      <div className="ratings">
+        <Rating label="Mood" hint="1 low · 5 great" value={f.mood} onChange={v => setF({ ...f, mood: v })} />
+        <Rating label="Connection" hint="1 very isolated · 5 close to crew and home" value={f.connection} onChange={v => setF({ ...f, connection: v })} />
+        <Rating label="Stress" hint="1 calm · 5 overwhelmed" value={f.stress} onChange={v => setF({ ...f, stress: v })} />
       </div>
       <div className="k">Any symptoms?</div>
       <div className="chips sym">
@@ -158,13 +172,13 @@ function CheckInForm({ person, meta, onDone }) {
 }
 
 const RANGE_LABEL = { '24h': '24 hours', '7d': '7 days', '30d': '30 days', '90d': '90 days' }
-const CHART_METRICS = ['heart_rate', 'spo2', 'bp_sys', 'body_temp', 'resp_rate', 'glucose', 'sleep_hours', 'mood']
+const CHART_METRICS = ['heart_rate', 'spo2', 'bp_sys', 'body_temp', 'resp_rate', 'glucose', 'sleep_hours', 'mood', 'connection', 'stress']
 
 function History({ person, meta }) {
   const [metric, setMetric] = useState('heart_rate')
   const [range, setRange] = useState('24h')
   const [data, setData] = useState(null)
-  const checkinMetric = ['glucose', 'sleep_hours', 'mood'].includes(metric)
+  const checkinMetric = ['glucose', 'sleep_hours', 'mood', 'connection', 'stress'].includes(metric)
   useEffect(() => { if (checkinMetric && range === '24h') setRange('7d') }, [checkinMetric, range])
   useEffect(() => {
     let alive = true
@@ -224,7 +238,7 @@ function Records({ person }) {
         <div className="scen small-scen">
           {[7, 30, 90].map(d => <button type="button" key={d} className={days === d ? 'on' : ''} onClick={() => setDays(d)}>{d} days</button>)}
           <span className="sep" />
-          {[['all', 'Everything'], ['checkin', 'Check-ins'], ['alert', 'Alerts']].map(([k, l]) => (
+          {[['all', 'Everything'], ['checkin', 'Check-ins'], ['wellbeing', 'Wellbeing'], ['alert', 'Alerts']].map(([k, l]) => (
             <button type="button" key={k} className={kind === k ? 'on' : ''} onClick={() => setKind(k)}>{l}</button>
           ))}
         </div>
@@ -243,7 +257,12 @@ function Records({ person }) {
             {g.items.map((r, i) => (
               <li key={i} className={`rec rec-${r.severity}`}>
                 <span className="rec-time mono">{new Date(r.ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</span>
-                {r.type === 'checkin' ? (
+                {r.type === 'wellbeing' ? (
+                  <div>
+                    <div className="rec-title">{r.message}</div>
+                    {r.note && <div className="rec-note">“{r.note}”</div>}
+                  </div>
+                ) : r.type === 'checkin' ? (
                   <div>
                     <div className="rec-title">Check-in{r.severity !== 'ok' && <span className={`rec-sev s-${r.severity}`}>{SEV_WORD[r.severity]}</span>}</div>
                     <div className="rec-vals">
@@ -272,6 +291,77 @@ function Records({ person }) {
         <div className="more"><button className="btn" onClick={() => setShown(n => n + 30)}>Show older records ({rows.length - shown} more)</button></div>
       )}
     </div>
+  )
+}
+
+const WB_WORD = { good: 'Doing well', watch: 'Worth a check', attention: 'Needs support' }
+const IDEAS = [
+  'Schedule a call or video message with family or friends',
+  'Share a meal, a game or a film with a crewmate',
+  'Spend a few minutes at the window looking at Earth',
+  'Exercise — it lifts mood as well as protecting bones and heart',
+  'Keep sleep and meal times regular',
+  'Music, reading, drawing, a journal — time for something of your own',
+]
+
+function Wellbeing({ person, reload }) {
+  const wb = person.wellbeing || {}
+  const [msg, setMsg] = useState('')
+  const [busy, setBusy] = useState(false)
+  async function log(kind, note = '') {
+    if (kind === 'support_request' && !window.confirm('Request a private talk with the flight psychologist? Mission control will be told you asked for a talk — nothing else.')) return
+    setBusy(true); setMsg('')
+    try {
+      await api(mpath('/wellbeing'), { method: 'POST', body: { crew_id: person.id, kind, note } })
+      setMsg({ call_home: 'Call home logged.', crew_time: 'Crew time logged.',
+               support_request: 'Request sent. The flight psychologist will arrange a private talk.' }[kind])
+      reload()
+    } catch (e) { setMsg(e.message) } finally { setBusy(false) }
+  }
+  const series = m => (wb.trend?.[m] || []).map(p => p.v)
+  const sinceCall = wb.days_since_call == null ? 'No call logged yet' : wb.days_since_call === 0 ? 'Today' : `${wb.days_since_call} day${wb.days_since_call === 1 ? '' : 's'} ago`
+  return (
+    <section className={`panel wellbeing wb-${wb.state || 'good'}`}>
+      <div className="panel-head">
+        <h2>Wellbeing</h2>
+        <span className={`pill p-${wb.state === 'attention' ? 'high' : wb.state === 'watch' ? 'watch' : 'low'}`}>{WB_WORD[wb.state || 'good']}</span>
+      </div>
+      <p className="sub">Long missions mean months of isolation and distance from home. Feeling lonely or low at times is common — noticing it early and reaching out helps.</p>
+      {wb.signals?.length > 0 && <div className="note">AURA noticed: {wb.signals.join('; ')}.</div>}
+      <div className="wb-grid">
+        <div className="wb-trends">
+          {[['mood', 'Mood'], ['connection', 'Connection'], ['stress', 'Stress']].map(([m, l]) => {
+            const v = series(m)
+            return (
+              <div key={m} className="wb-row">
+                <span className="m-label">{l}</span>
+                <Spark values={v} status={m === 'stress' ? (v[v.length - 1] >= 4 ? 'warning' : 'ok') : (v[v.length - 1] <= 2 ? 'warning' : 'ok')} />
+                <span className="mono">{v.length ? v[v.length - 1] : '—'}<span className="m-unit">/5</span></span>
+              </div>
+            )
+          })}
+          <p className="sub small">Last 14 days, from the daily check-in.</p>
+        </div>
+        <div className="wb-contact">
+          <div className="wb-stat"><span className="k">Last call home</span><span>{sinceCall}</span></div>
+          <div className="wb-stat"><span className="k">This week</span><span>{wb.calls_7d ?? 0} call{wb.calls_7d === 1 ? '' : 's'} home · {wb.crew_time_7d ?? 0} crew time{wb.crew_time_7d === 1 ? '' : 's'}</span></div>
+          <div className="actions wrap">
+            <button className="btn" disabled={busy} onClick={() => log('call_home')}>Log a call home</button>
+            <button className="btn" disabled={busy} onClick={() => log('crew_time')}>Log crew time</button>
+          </div>
+          <button className="btn gold full" disabled={busy || wb.support_requested} onClick={() => log('support_request')}>
+            {wb.support_requested ? 'Private talk requested' : 'Request a private talk with the flight psychologist'}
+          </button>
+          {msg && <div className="sub small">{msg}</div>}
+        </div>
+      </div>
+      <div className="k">Ideas that help</div>
+      <ul className="ideas">{IDEAS.map(i => <li key={i}>{i}</li>)}</ul>
+      <div className="wb-foot">
+        <a className="ask" href={`#/m/${getMission()}/assistant?crew=${person.id}`}>Talk it through with AURA →</a>
+        <span className="sub small">If you ever feel unsafe or think about harming yourself, tell a crewmate now and contact the flight surgeon immediately.</span>
+      </div>
+    </section>
   )
 }
 
@@ -318,6 +408,8 @@ function Profile({ person, meta, reload }) {
           <CheckInForm person={person} meta={meta} onDone={reload} />
         </section>
       </div>
+
+      <Wellbeing person={person} reload={reload} />
 
       <section className="panel">
         <div className="panel-head"><h2>Trends</h2></div>

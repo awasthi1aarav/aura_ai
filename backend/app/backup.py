@@ -35,7 +35,8 @@ def export_mission(m):
             "sensors": [dict(ref=s.id, name=s.name, metric=s.metric, subject=s.subject, crew_ref=s.crew_id,
                              active=bool(s.active)) for s in sens],
             "checkins": [dict(crew_ref=r.crew_id, ts=_iso(r.ts), glucose=r.glucose, sleep_hours=r.sleep_hours,
-                              mood=r.mood, exercise_min=r.exercise_min, symptoms=r.symptoms or "", note=r.note or "")
+                              mood=r.mood, connection=r.connection, stress=r.stress,
+                              exercise_min=r.exercise_min, symptoms=r.symptoms or "", note=r.note or "")
                          for r in conn.execute(select(db.checkins).where(db.checkins.c.mission_id == m.id)
                                                .order_by(db.checkins.c.ts))],
             "history": [dict(sensor_ref=r.sensor_id, hour=_iso(r.hour), avg=r.avg, min=r.min, max=r.max, n=r.n)
@@ -45,6 +46,9 @@ def export_mission(m):
                          for r in conn.execute(select(db.readings).where(db.readings.c.sensor_id.in_(sids),
                                                                          db.readings.c.source != "simulator")
                                                .order_by(db.readings.c.ts))],
+            "wellbeing": [dict(crew_ref=r.crew_id, ts=_iso(r.ts), kind=r.kind, note=r.note or "")
+                          for r in conn.execute(select(db.wellbeing).where(db.wellbeing.c.mission_id == m.id)
+                                                .order_by(db.wellbeing.c.ts))],
             "alerts": [dict(crew_ref=r.crew_id, kind=r.kind, severity=r.severity, metric=r.metric,
                             message=r.message, hazard=r.hazard, risk=r.risk, started=_iso(r.started),
                             ended=_iso(r.ended))
@@ -60,9 +64,10 @@ def export_csv(m, what):
         names = dict(conn.execute(select(db.crew.c.id, db.crew.c.name).where(db.crew.c.mission_id == m.id)).all())
         if what == "checkins":
             w.writerow(["time_utc", "crew_member", "blood_sugar_mg_dl", "sleep_hours", "mood_1_5",
-                        "exercise_min", "symptoms", "note"])
+                        "connection_1_5", "stress_1_5", "exercise_min", "symptoms", "note"])
             for r in conn.execute(select(db.checkins).where(db.checkins.c.mission_id == m.id).order_by(db.checkins.c.ts)):
-                w.writerow([_iso(r.ts), names.get(r.crew_id, ""), r.glucose, r.sleep_hours, r.mood, r.exercise_min,
+                w.writerow([_iso(r.ts), names.get(r.crew_id, ""), r.glucose, r.sleep_hours, r.mood, r.connection,
+                            r.stress, r.exercise_min,
                             (r.symptoms or "").replace(",", "; "), r.note or ""])
         else:
             sens = {s.id: s for s in conn.execute(select(db.sensors).where(db.sensors.c.mission_id == m.id))}
@@ -112,6 +117,8 @@ class BCheckin(BaseModel):
     glucose: Optional[float] = Field(None, ge=0, le=1000)
     sleep_hours: Optional[float] = Field(None, ge=0, le=24)
     mood: Optional[float] = Field(None, ge=1, le=5)
+    connection: Optional[float] = Field(None, ge=1, le=5)
+    stress: Optional[float] = Field(None, ge=1, le=5)
     exercise_min: Optional[float] = Field(None, ge=0, le=1440)
     symptoms: str = Field("", max_length=500)
     note: str = Field("", max_length=500)
@@ -145,6 +152,13 @@ class BAlert(BaseModel):
     ended: Optional[datetime] = None
 
 
+class BWellbeing(BaseModel):
+    crew_ref: int
+    ts: datetime
+    kind: str = Field(pattern="^(call_home|crew_time|support_request)$")
+    note: str = Field("", max_length=300)
+
+
 class BMission(BaseModel):
     name: str = ""
     environment: Optional[str] = None
@@ -161,6 +175,7 @@ class Backup(BaseModel):
     history: list[BHour] = Field([], max_length=150_000)
     readings: list[BReading] = Field([], max_length=50_000)
     alerts: list[BAlert] = Field([], max_length=20_000)
+    wellbeing: list[BWellbeing] = Field([], max_length=20_000)
 
 
 def _utc(t):
@@ -207,7 +222,8 @@ def restore(raw: bytes, name: str, pw_hash: str, code: str, environment_ok):
             for i in range(0, len(rows), 2000):
                 yield rows[i:i + 2000]
         rows = [dict(mission_id=mid, crew_id=crew_map[c.crew_ref], ts=_utc(c.ts), glucose=c.glucose,
-                     sleep_hours=c.sleep_hours, mood=c.mood, exercise_min=c.exercise_min,
+                     sleep_hours=c.sleep_hours, mood=c.mood, connection=c.connection, stress=c.stress,
+                     exercise_min=c.exercise_min,
                      symptoms=c.symptoms, note=c.note) for c in b.checkins if c.crew_ref in crew_map]
         for ch in chunks(rows):
             conn.execute(insert(db.checkins), ch)
@@ -219,6 +235,10 @@ def restore(raw: bytes, name: str, pw_hash: str, code: str, environment_ok):
                 for r in b.readings if r.sensor_ref in sensor_map]
         for ch in chunks(rows):
             conn.execute(insert(db.readings), ch)
+        rows = [dict(mission_id=mid, crew_id=crew_map[w.crew_ref], ts=_utc(w.ts), kind=w.kind, note=w.note)
+                for w in b.wellbeing if w.crew_ref in crew_map]
+        for ch in chunks(rows):
+            conn.execute(insert(db.wellbeing), ch)
         rows = [dict(mission_id=mid, crew_id=crew_map.get(a.crew_ref), key=f"restored|{i}", kind=a.kind,
                      severity=a.severity, metric=a.metric, message=a.message, hazard=a.hazard, risk=a.risk,
                      started=_utc(a.started), ended=_utc(a.ended) or _utc(a.started))

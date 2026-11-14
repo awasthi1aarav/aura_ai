@@ -51,6 +51,10 @@ CHECKIN_METRICS = {
                         source="Adult sleep guidance (7\u20139 h per night); adjustable"),
     "mood": dict(label="Mood", unit="/5", warn_low=3, warn_high=None, crit_low=1.5, crit_high=None,
                  source="Self-rated 1\u20135; 2 = watch, 1 = needs attention"),
+    "connection": dict(label="Connection", unit="/5", warn_low=3, warn_high=None, crit_low=1.5, crit_high=None,
+                       source="Self-rated: how connected to crew and home (1 = very isolated)"),
+    "stress": dict(label="Stress", unit="/5", warn_low=None, warn_high=3.5, crit_low=None, crit_high=5,
+                   source="Self-rated: 1 = calm, 5 = overwhelmed"),
 }
 
 ALL_METRICS = {**CREW_METRICS, **SHIP_METRICS, **CHECKIN_METRICS}
@@ -80,7 +84,7 @@ SIM_NOISE = {
     "cabin_temp": 0.08, "humidity": 0.5, "radiation": 1.2,
 }
 DECIMALS = {
-    "glucose": 0, "sleep_hours": 1, "mood": 0,
+    "glucose": 0, "sleep_hours": 1, "mood": 0, "connection": 0, "stress": 0,
     "heart_rate": 0, "spo2": 0, "bp_sys": 0, "bp_dia": 0, "resp_rate": 0, "body_temp": 1,
     "cabin_co2": 2, "cabin_o2": 0, "cabin_pressure": 1, "cabin_temp": 1,
     "humidity": 0, "radiation": 0,

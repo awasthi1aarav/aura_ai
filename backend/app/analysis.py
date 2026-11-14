@@ -121,6 +121,9 @@ def _compute(mission_id):
                 if r:
                     latest_any[sid] = r
         crew_ids = [c.id for c in crew_rows]
+        wb_events = list(conn.execute(select(db.wellbeing).where(
+            db.wellbeing.c.crew_id.in_(crew_ids or [-1]), db.wellbeing.c.ts >= t_now - timedelta(days=30))
+            .order_by(db.wellbeing.c.ts)))
         checks = list(conn.execute(select(db.checkins).where(
             db.checkins.c.crew_id.in_(crew_ids or [-1]), db.checkins.c.ts >= t_now - timedelta(days=120))
             .order_by(db.checkins.c.ts)))
@@ -246,6 +249,47 @@ def _compute(mission_id):
             alerts.append(dict(severity="watch", kind="checkin", subject="crew", crew_id=c.id, metric="sleep_hours",
                                who=c.name, value=sleeps[-1], eta_min=None, dir="low",
                                message=f"Sleep averaging {sum(sleeps)/3:.1f} h over the last 3 nights"))
+        # --- wellbeing: mood / connection / stress patterns, contact with home, support requests ---
+        ev = [e for e in wb_events if e.crew_id == c.id]
+        def _ts(x):
+            return x.ts.replace(tzinfo=timezone.utc) if x.ts.tzinfo is None else x.ts
+        calls = [e for e in ev if e.kind == "call_home"]
+        last_call = _ts(calls[-1]) if calls else None
+        days_since_call = (t_now - last_call).days if last_call else None
+        support = [e for e in ev if e.kind == "support_request" and t_now - _ts(e) < timedelta(hours=24)]
+        last3 = mine_ck[-3:]
+        low_mood = sum(1 for k in last3 if k.mood is not None and k.mood <= 2)
+        isolated = sum(1 for k in last3 if k.connection is not None and k.connection <= 2)
+        stressed = sum(1 for k in last3 if k.stress is not None and k.stress >= 4)
+        signals = []
+        if low_mood >= 2:
+            signals.append("low mood on 2 of the last 3 days")
+        if isolated >= 2:
+            signals.append("feeling isolated on 2 of the last 3 days")
+        if stressed >= 2:
+            signals.append("high stress on 2 of the last 3 days")
+        if signals:
+            alerts.append(dict(severity="warning" if len(signals) > 1 else "watch", kind="wellbeing", subject="crew",
+                               crew_id=c.id, metric="wellbeing", who=c.name, value=None, eta_min=None,
+                               message="Wellbeing: " + "; ".join(signals)))
+        if days_since_call is None or days_since_call >= 7:
+            alerts.append(dict(severity="watch", kind="routine", subject="crew", crew_id=c.id, metric=None,
+                               who=c.name, value=None, eta_min=None,
+                               message="No call home logged for 7+ days \u2014 consider scheduling one"))
+        if support:
+            alerts.append(dict(severity="warning", kind="wellbeing", subject="crew", crew_id=c.id, metric="wellbeing",
+                               who=c.name, value=None, eta_min=None,
+                               message="Requested a private talk with the flight psychologist"))
+        wb_state = "attention" if support or len(signals) > 1 else "watch" if signals else "good"
+        week = [k for k in mine_ck if t_now - _ts(k) < timedelta(days=14)]
+        wb = dict(state=wb_state, signals=signals,
+                  last_call_home=last_call.isoformat() if last_call else None, days_since_call=days_since_call,
+                  calls_7d=sum(1 for e in calls if t_now - _ts(e) < timedelta(days=7)),
+                  crew_time_7d=sum(1 for e in ev if e.kind == "crew_time" and t_now - _ts(e) < timedelta(days=7)),
+                  support_requested=bool(support),
+                  trend={m: [dict(t=_ts(k).isoformat(), v=getattr(k, m)) for k in week if getattr(k, m) is not None]
+                         for m in ("mood", "connection", "stress")})
+
         due = last is None or (t_now - last_ts) > timedelta(hours=24)
         if due:
             alerts.append(dict(severity="watch", kind="routine", subject="crew", crew_id=c.id, metric=None,
@@ -263,8 +307,10 @@ def _compute(mission_id):
             dict(key="checkin", label="Morning health check-in", done=today_ck is not None),
             dict(key="sleep", label="Sleep 7 h or more", done=bool(today_ck and (today_ck.sleep_hours or 0) >= 7)),
             dict(key="exercise", label="Exercise 60 min or more", done=bool(today_ck and (today_ck.exercise_min or 0) >= 60)),
+            dict(key="connect", label="Connect: call home or crew time",
+                 done=any(e.kind in ("call_home", "crew_time") and _ts(e).date() == today for e in ev)),
         ]
-        wellness[c.id] = dict(checkin=items, last_checkin=last_ts.isoformat() if last else None, due=due,
+        wellness[c.id] = dict(checkin=items, last_checkin=last_ts.isoformat() if last else None, due=due, wellbeing=wb,
                               streak=streak, tasks=tasks,
                               symptoms=[x for x in (last.symptoms or "").split(",") if x] if fresh else [])
 
@@ -273,9 +319,17 @@ def _compute(mission_id):
         a.update(knowledge.tag(a["metric"]) if a["metric"] else dict(hazard=None, hazard_label=None, risk=None))
         a["action"] = (knowledge.guidance(a["metric"], a["value"], lims.get(a["metric"]), a.get("dir"))
                        if a["metric"] and a["value"] is not None else None)
-        if a["kind"] == "routine":
+        if a["kind"] == "routine" and "call home" in a["message"]:
+            a["action"] = dict(now=["Schedule a private call or video message home", "Log it in the Wellbeing panel"],
+                               escalate="Regular contact with family and friends is one of the best protections "
+                                        "against isolation on long missions.")
+        elif a["kind"] == "routine":
             a["action"] = dict(now=["Open Check-in and log blood sugar, sleep, mood, exercise and any symptoms"],
                                escalate="Takes about one minute. Daily check-ins let AURA spot slow changes early.")
+        if a["metric"] == "wellbeing":
+            a.update(hazard="isolation", hazard_label=knowledge.HAZARDS["isolation"],
+                     risk="Risk of Behavioral Changes and Psychiatric Disorders")
+            a["action"] = knowledge.guidance("wellbeing", 0, True, "low")
     for lst in by_subject.values():
         for item in lst:
             item.update(knowledge.tag(item["metric"]))
@@ -307,7 +361,13 @@ def _compute(mission_id):
         metrics = [k for k, (h, _) in knowledge.METRIC_HAZARD.items() if h == key]
         hazards.append(dict(key=key, label=label, status=worst or "ok", count=len(hz), risks=risks, metrics=metrics))
     ms = m.mission_start
-    data = dict(updated=t_now.isoformat(), crew=crew_out, hazards=hazards,
+    if ms is not None and ms.tzinfo is None:
+        ms = ms.replace(tzinfo=timezone.utc)
+    earth = knowledge.earth_info(m.environment or knowledge.DEFAULT_ENV, ms, t_now)
+    for h in hazards:
+        if h["key"] == "distance":
+            h["earth"] = earth
+    data = dict(updated=t_now.isoformat(), crew=crew_out, hazards=hazards, earth=earth,
                 environment=dict(key=m.environment or knowledge.DEFAULT_ENV, **env),
                 crew_health=round(sum(c["health"] for c in crew_out) / len(crew_out)) if crew_out else None,
                 ship=dict(status=ship_status, metrics=ship_items), alerts=alerts,

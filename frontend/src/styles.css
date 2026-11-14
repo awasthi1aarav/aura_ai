@@ -404,3 +404,28 @@ a.btn { text-decoration: none; text-align: center; display: inline-block; }
 .rec-note { color: var(--ink-2); font-style: italic; margin-top: 3px; }
 .hostjoin .restore { grid-column: 1 / -1; }
 .more { text-align: center; margin-top: 16px; }
+
+/* ---------- earth + wellbeing ---------- */
+.card.earth { display: grid; grid-template-columns: 1.6fr 1fr 1fr 1.8fr 1fr; padding: 0; }
+.earth > div { padding: 16px 18px; border-left: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
+.earth > div:first-child { border-left: 0; }
+.earth-km { font: 600 28px/1.1 var(--serif); color: var(--gold-deep); }
+.earth-cell .mono { font-size: 20px; }
+.earth-cell.wide span:last-child { font-size: 13px; color: var(--ink-2); }
+.wellbeing { border-top: 2px solid var(--line-strong); }
+.wellbeing.wb-watch { border-top-color: var(--gold); }
+.wellbeing.wb-attention { border-top-color: var(--crit); }
+.wb-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 24px; margin: 14px 0 16px; }
+.wb-row { display: grid; grid-template-columns: 90px 1fr 48px; gap: 12px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.wb-row .mono { text-align: right; font-size: 17px; }
+.wb-contact { display: flex; flex-direction: column; gap: 10px; }
+.wb-stat { display: flex; flex-direction: column; gap: 2px; }
+.actions.wrap { flex-wrap: wrap; margin-top: 4px; }
+.btn.full { width: 100%; }
+.ideas { margin: 6px 0 14px; padding-left: 18px; color: var(--ink-2); font-size: 13.5px; columns: 2; column-gap: 28px; }
+.ideas li { margin-bottom: 5px; break-inside: avoid; }
+.wb-foot { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid var(--line); }
+.wb-foot .ask { margin-top: 0; }
+.ratings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 1180px) { .card.earth { grid-template-columns: 1fr 1fr; } .earth > div { border-top: 1px solid var(--line); } }
+@media (max-width: 760px) { .wb-grid, .ratings { grid-template-columns: 1fr; } .ideas { columns: 1; } .card.earth { grid-template-columns: 1fr; } .earth > div { border-left: 0; } }

@@ -112,7 +112,17 @@ check("checkin mood 6 rejected", c.post(f"/api/m/{M}/checkin", json={"crew_id": 
 mo = c.get(f"/api/m/{M}/overview").json()
 astro = next(x for x in mo["crew"] if x["id"] == NC)
 ck = {i["metric"]: i["status"] for i in astro["checkin"]}
-check("checkin statuses", ck == {"glucose": "critical", "sleep_hours": "warning", "mood": "critical"}, str(ck))
+check("checkin statuses", {k: ck.get(k) for k in ("glucose", "sleep_hours", "mood")} ==
+      {"glucose": "critical", "sleep_hours": "warning", "mood": "critical"}, str(ck))
+r = c.post(f"/api/m/{M}/checkin", json={"crew_id": NC, "connection": 1, "stress": 5})
+check("checkin connection/stress", r.status_code == 200)
+r = c.post(f"/api/m/{M}/wellbeing", json={"crew_id": NC, "kind": "support_request"})
+check("support request", r.status_code == 200)
+check("bad wellbeing kind", c.post(f"/api/m/{M}/wellbeing", json={"crew_id": NC, "kind": "x"}).status_code == 422)
+mo = c.get(f"/api/m/{M}/overview").json()
+astro = next(x for x in mo["crew"] if x["id"] == NC)
+check("wellbeing needs support", astro["wellbeing"]["state"] == "attention" and astro["wellbeing"]["support_requested"])
+check("earth info", mo["earth"]["distance_km"] > 1e7 and mo["earth"]["return_time"])
 check("streak >= 1 and tasks", astro["streak"] >= 1 and astro["tasks"][0]["done"])
 check("isolation hazard raised", next(h for h in mo["hazards"] if h["key"] == "isolation")["status"] in ("warning", "critical"))
 recs = c.get(f"/api/m/{M}/records?crew_id={NC}&days=7").json()

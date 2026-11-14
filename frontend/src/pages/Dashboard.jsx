@@ -78,7 +78,7 @@ function AlertItem({ a }) {
     <li className={`al al-${a.severity}`}>
       <div className="al-top">
         <span className="al-sev">{a.severity}</span>
-        <span className="al-kind">{{ limit: 'Limit', prediction: 'Forecast', baseline: 'Baseline', checkin: 'Check-in', routine: 'Routine' }[a.kind]}</span>
+        <span className="al-kind">{{ limit: 'Limit', prediction: 'Forecast', baseline: 'Baseline', checkin: 'Check-in', routine: 'Routine', wellbeing: 'Wellbeing' }[a.kind]}</span>
       </div>
       <div className="al-who">{a.who}</div>
       <div className="al-msg">{a.message}</div>
@@ -121,6 +121,25 @@ function Alerts({ alerts }) {
   )
 }
 
+const km = n => n >= 1e6 ? `${(n / 1e6).toFixed(1)} million km` : `${Math.round(n).toLocaleString()} km`
+
+function Earth({ e, env }) {
+  if (!e) return null
+  return (
+    <div className="card earth">
+      <div className="earth-main">
+        <span className="k">Distance from Earth</span>
+        <span className="earth-km">{km(e.distance_km)}</span>
+        <span className="sub small">{e.note}</span>
+      </div>
+      <div className="earth-cell"><span className="k">Signal, one way</span><span className="mono">{e.light_one_way}</span></div>
+      <div className="earth-cell"><span className="k">Question &amp; answer</span><span className="mono">{e.light_round_trip}</span></div>
+      <div className="earth-cell wide"><span className="k">Time to reach Earth</span><span>{e.return_time}</span></div>
+      <div className="earth-cell"><span className="k">Mission day</span><span className="mono">{e.mission_day}</span>{e.extra && <span className="sub small">{e.extra}</span>}</div>
+    </div>
+  )
+}
+
 function Hazards({ hazards, env }) {
   const word = { ok: 'Clear', watch: 'Watch', warning: 'Caution', critical: 'Critical' }
   return (
@@ -130,7 +149,7 @@ function Hazards({ hazards, env }) {
           <span className="k">{h.label}</span>
           <span className="hz-state">{word[h.status]}{h.count ? <span className="mono"> · {h.count}</span> : null}</span>
           <span className="hz-note">
-            {h.key === 'distance' ? `Signal delay: ${env?.delay}`
+            {h.key === 'distance' && h.earth ? `${km(h.earth.distance_km)} · signal ${h.earth.light_one_way}`
               : h.key === 'gravity' ? env?.gravity
               : h.risks[0] || 'No active risks'}
           </span>
@@ -161,6 +180,12 @@ export default function Dashboard({ data, error }) {
         <div className="crew-grid">
           {data.crew.map(c => <CrewCard key={c.id} c={c} />)}
         </div>
+
+        <div className="section-head">
+          <h2>Earth</h2>
+          <span className="sub">{data.environment?.label} · {data.environment?.gravity}</span>
+        </div>
+        <Earth e={data.earth} env={data.environment} />
 
         <div className="section-head">
           <h2>Habitat</h2>
