@@ -3,7 +3,7 @@
 As the NASA Space Apps rules require, this page states where and how AI was used, and what the team did.
 
 ## How AURA was built
-AURA was built by **Team Orbital Five** (a team lead and two QA testers) working with an
+AURA was built by **Team Orbital Five** (team lead Aarav Awasthi and two QA testers) working with an
 AI coding assistant (**Claude, by Anthropic**).
 The team decided *what* to build and *why*: the product, its features, its priorities and every design
 choice. Claude wrote most of the source code from those decisions. The team reviewed it, tried it as
