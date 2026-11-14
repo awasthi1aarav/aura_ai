@@ -5,6 +5,7 @@ import Assistant from './pages/Assistant.jsx'
 import Admin from './pages/Admin.jsx'
 import Host from './pages/Host.jsx'
 import Team from './pages/Team.jsx'
+import Crew from './pages/Crew.jsx'
 
 function useHash() {
   const [hash, setHash] = useState(window.location.hash || '#/')
@@ -24,8 +25,8 @@ function parse(hash) {
   if (parts[0] === 'host' || parts[0] === 'join') return { page: 'host', params }
   if (parts[0] === 'team') return { page: 'team', params }
   if (parts[0] === 'm' && parts[1]) {
-    const sub = parts[2] === 'assistant' ? 'assistant' : parts[2] === 'admin' ? 'admin' : 'dashboard'
-    return { page: sub, code: parts[1].toUpperCase().replace(/[^A-Z0-9]/g, ''), params }
+    const sub = ['assistant', 'admin', 'crew'].includes(parts[2]) ? parts[2] : 'dashboard'
+    return { page: sub, code: parts[1].toUpperCase().replace(/[^A-Z0-9]/g, ''), crewId: parts[3], params }
   }
   return { page: 'redirect', params }
 }
@@ -81,6 +82,7 @@ export default function App() {
           {inMission ? (
             <>
               <a className={route.page === 'dashboard' ? 'on' : ''} href={base}>Dashboard</a>
+              <a className={route.page === 'crew' ? 'on' : ''} href={`${base}/crew`}>Check-in</a>
               <a className={route.page === 'assistant' ? 'on' : ''} href={`${base}/assistant`}>Assistant</a>
               <a className={route.page === 'admin' ? 'on' : ''} href={`${base}/admin`}>Admin</a>
             </>
@@ -120,6 +122,7 @@ export default function App() {
         {inMission && !missing && (
           <React.Fragment key={code}>
             {route.page === 'dashboard' && <Dashboard data={data} error={error} />}
+            {route.page === 'crew' && <Crew data={data} crewId={route.crewId} />}
             {route.page === 'assistant' && <Assistant data={data} initialCrew={route.params.get('crew')} />}
             {route.page === 'admin' && <Admin mission={data?.mission} />}
           </React.Fragment>

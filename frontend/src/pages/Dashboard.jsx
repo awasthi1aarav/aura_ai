@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { fmt, getMission } from '../api.js'
 
 export function Spark({ values, status }) {
@@ -53,8 +53,53 @@ function CrewCard({ c }) {
       <div className="metrics">
         {c.metrics.map(m => <Metric key={m.sensor_id} m={m} />)}
       </div>
-      <a className="ask" href={`#/m/${getMission()}/assistant?crew=${c.id}`}>Ask AURA about {c.name.split(' ').slice(-1)[0]} →</a>
+      <div className="ck-row">
+        {c.checkin?.map(i => (
+          <span key={i.metric} className={`ck st-${i.status}`}>
+            <span className="m-label">{i.label}</span> <span className="mono">{fmt(i.value, i.metric)}</span> <span className="m-unit">{i.unit}</span>
+          </span>
+        ))}
+        {c.due && <span className="due">Check-in due</span>}
+      </div>
+      <div className="card-foot">
+        <span className="sub">Score <b className="mono">{c.health}</b> · Streak <b className="mono">{c.streak}</b>d</span>
+        <span>
+          <a className="ask" href={`#/m/${getMission()}/crew/${c.id}`}>Health profile</a>
+          <a className="ask" href={`#/m/${getMission()}/assistant?crew=${c.id}`}>Ask AURA →</a>
+        </span>
+      </div>
     </article>
+  )
+}
+
+function AlertItem({ a }) {
+  const [open, setOpen] = useState(a.severity === 'critical')
+  return (
+    <li className={`al al-${a.severity}`}>
+      <div className="al-top">
+        <span className="al-sev">{a.severity}</span>
+        <span className="al-kind">{{ limit: 'Limit', prediction: 'Forecast', baseline: 'Baseline', checkin: 'Check-in', routine: 'Routine' }[a.kind]}</span>
+      </div>
+      <div className="al-who">{a.who}</div>
+      <div className="al-msg">{a.message}</div>
+      {(a.hazard_label || a.risk) && (
+        <div className="tags">
+          {a.hazard_label && <span className="tag-hz">{a.hazard_label}</span>}
+          {a.risk && <span className="tag-risk">{a.risk}</span>}
+        </div>
+      )}
+      {a.action && (
+        <>
+          <button className="link act-toggle" onClick={() => setOpen(!open)}>{open ? 'Hide' : 'What to do'}</button>
+          {open && (
+            <div className="action">
+              <ol>{a.action.now.map((s, i) => <li key={i}>{s}</li>)}</ol>
+              <div className="esc"><span className="k">When to escalate</span>{a.action.escalate}</div>
+            </div>
+          )}
+        </>
+      )}
+    </li>
   )
 }
 
@@ -66,23 +111,32 @@ function Alerts({ alerts }) {
         <span className="count mono">{alerts.length}</span>
       </div>
       {alerts.length === 0 && <p className="empty">All values within limits and close to each crew member's baseline.</p>}
-      <ol>
-        {alerts.map((a, i) => (
-          <li key={i} className={`al al-${a.severity}`}>
-            <div className="al-top">
-              <span className="al-sev">{a.severity}</span>
-              <span className="al-kind">{{ limit: 'Limit', prediction: 'Forecast', baseline: 'Baseline' }[a.kind]}</span>
-            </div>
-            <div className="al-who">{a.who}</div>
-            <div className="al-msg">{a.message}</div>
-          </li>
-        ))}
-      </ol>
+      <ol>{alerts.map((a, i) => <AlertItem key={`${a.who}-${a.metric}-${a.kind}-${i}`} a={a} />)}</ol>
       <p className="method">
         Limits: NASA-STD-3001 (cabin) and clinical early-warning bands (vitals). Baseline: each
         astronaut's pre-flight normal. Forecast: linear trend over the last 5 min, projected 60 min ahead.
+        Hazards and risks: NASA Human Research Program.
       </p>
     </aside>
+  )
+}
+
+function Hazards({ hazards, env }) {
+  const word = { ok: 'Clear', watch: 'Watch', warning: 'Caution', critical: 'Critical' }
+  return (
+    <div className="hazards">
+      {hazards.map(h => (
+        <div key={h.key} className={`hz hz-${h.status}`} title={h.risks.join(', ') || 'No active risks'}>
+          <span className="k">{h.label}</span>
+          <span className="hz-state">{word[h.status]}{h.count ? <span className="mono"> · {h.count}</span> : null}</span>
+          <span className="hz-note">
+            {h.key === 'distance' ? `Signal delay: ${env?.delay}`
+              : h.key === 'gravity' ? env?.gravity
+              : h.risks[0] || 'No active risks'}
+          </span>
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -94,6 +148,12 @@ export default function Dashboard({ data, error }) {
   return (
     <div className="dash">
       <section className="main-col">
+        <div className="section-head">
+          <h2>NASA hazard watch</h2>
+          <span className="sub">{data.environment?.label} · crew health score <b className="mono">{data.crew_health}</b></span>
+        </div>
+        <Hazards hazards={data.hazards} env={data.environment} />
+
         <div className="section-head">
           <h2>Crew</h2>
           <span className="sub">{data.crew.length} on board · simulated demo data · updated {new Date(data.updated).toLocaleTimeString()}</span>

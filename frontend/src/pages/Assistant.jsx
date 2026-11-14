@@ -90,7 +90,7 @@ export default function Assistant({ data, initialCrew }) {
           <div className="snapshot">
             <div className="k">Live snapshot</div>
             <dl>
-              {person.metrics.map(m => (
+              {[...person.metrics, ...(person.checkin || [])].map(m => (
                 <React.Fragment key={m.metric}>
                   <dt>{m.label}</dt>
                   <dd className={`st-${m.status}`}><span className="mono">{fmt(m.value, m.metric)}</span> {m.unit}</dd>

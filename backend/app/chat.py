@@ -39,6 +39,10 @@ Conversation rules:
 - No timestamps, no "based on live telemetry" openers, no closing disclaimers (the app shows one).
 - Keep it brief: 1-3 short paragraphs or a few bullets, under 150 words unless asked for detail.
 - Off-topic questions: one friendly line steering back to crew health or the spacecraft.
+- When relevant, link issues to NASA's five spaceflight hazards and the named HRP risk, and consider
+  the mission environment (gravity, signal delay: the farther from Earth, the more the crew must act on
+  their own before the flight surgeon can respond).
+- If the daily check-in is due or a symptom is reported, you may gently suggest logging it.
 """
 
 
@@ -60,17 +64,31 @@ def _fmt_metric(m):
 
 def build_context(mission_id, crew_id=None):
     d = compute(mission_id)
-    out = []
+    env = d.get("environment") or {}
+    out = [f"MISSION ENVIRONMENT: {env.get('label')} | gravity: {env.get('gravity')} | "
+           f"signal delay to Earth: {env.get('delay')}"]
     for c in d["crew"]:
         if crew_id and c["id"] != crew_id:
             continue
-        out.append(f"\nASTRONAUT {c['name']} ({c['role']}), overall risk: {c['risk'].upper()}")
+        out.append(f"\nASTRONAUT {c['name']} ({c['role']}), overall risk: {c['risk'].upper()}, "
+                   f"health score {c.get('health')}/100, check-in streak {c.get('streak', 0)} days")
         out += [_fmt_metric(m) for m in c["metrics"]]
+        ck = [f"{i['label']} {_n(i['metric'], i['value'])} {i['unit']} [{i['status']}]"
+              for i in c.get("checkin", []) if i["value"] is not None]
+        out.append("  Latest self check-in: " + ("; ".join(ck) if ck else "none in the last 36 h"))
+        if c.get("symptoms"):
+            out.append("  Reported symptoms: " + ", ".join(c["symptoms"]))
+        if c.get("due"):
+            out.append("  Daily check-in is due.")
     out.append(f"\nCABIN / SHIP (status {d['ship']['status']}):")
     out += [_fmt_metric(m) for m in d["ship"]["metrics"]]
     rel = [a for a in d["alerts"] if not crew_id or a["subject"] == "ship" or a["crew_id"] == crew_id]
     out.append("\nACTIVE ALERTS:" if rel else "\nACTIVE ALERTS: none")
-    out += [f"  - [{a['severity']}] {a['who']}: {a['message']}" for a in rel[:15]]
+    out += [f"  - [{a['severity']}] {a['who']}: {a['message']}"
+            + (f" (NASA hazard: {a['hazard_label']}; HRP risk: {a['risk']})" if a.get("hazard_label") else "")
+            for a in rel[:15]]
+    hz = [f"{h['label']}: {h['status']}" for h in d.get("hazards", [])]
+    out.append("\nNASA FIVE HAZARDS STATUS: " + "; ".join(hz))
     return "\n".join(out), d, rel
 
 

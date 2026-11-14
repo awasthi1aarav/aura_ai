@@ -35,6 +35,7 @@ missions = Table("missions", meta,
     Column("name", String(60), nullable=False),
     Column("pw_hash", String(200), nullable=False),            # mission (host) password
     Column("is_demo", Boolean, default=False),
+    Column("environment", String(20), default="spacecraft"),
     Column("simulator", Boolean, default=True),
     Column("scenario", String(30), default="none"),
     Column("scenario_crew", Integer, nullable=True),
@@ -99,6 +100,26 @@ chats = Table("chats", meta,
 )
 Index("ix_chats_scope", chats.c.mission_id, chats.c.client_id, chats.c.crew_id, chats.c.ts)
 
+checkins = Table("checkins", meta,                            # astronaut daily self check-in
+    Column("id", Integer, primary_key=True),
+    Column("mission_id", Integer, ForeignKey("missions.id", ondelete="CASCADE"), nullable=False),
+    Column("crew_id", Integer, ForeignKey("crew.id", ondelete="CASCADE"), nullable=False),
+    Column("ts", DateTime(timezone=True), nullable=False, default=now),
+    Column("glucose", Float), Column("sleep_hours", Float), Column("mood", Float),
+    Column("exercise_min", Float),
+    Column("symptoms", Text, default=""),                     # comma-separated tags
+    Column("note", Text, default=""),
+)
+Index("ix_checkins_crew_ts", checkins.c.crew_id, checkins.c.ts)
+
+rollups = Table("rollups", meta,                              # hourly history kept for 7 days
+    Column("id", Integer, primary_key=True),
+    Column("sensor_id", Integer, ForeignKey("sensors.id", ondelete="CASCADE"), nullable=False),
+    Column("hour", DateTime(timezone=True), nullable=False),
+    Column("avg", Float), Column("min", Float), Column("max", Float), Column("n", Integer),
+)
+Index("ix_rollups_sensor_hour", rollups.c.sensor_id, rollups.c.hour)
+
 users = Table("users", meta,                                  # platform team (can manage every mission)
     Column("id", Integer, primary_key=True),
     Column("username", String(40), nullable=False, unique=True),
@@ -149,11 +170,12 @@ def add_crew_member(conn, mission_id, name, role="", notes="", baseline=None):
     return cid
 
 
-def create_mission(conn, name, pw_hash, code=None, is_demo=False, demo_crew=True):
+def create_mission(conn, name, pw_hash, code=None, is_demo=False, demo_crew=True, environment="spacecraft"):
     """A new mission starts with default limits, ship sensors and (optionally) the demo crew."""
     t = now()
     mid = conn.execute(insert(missions).values(
         code=code or new_code(), name=name, pw_hash=pw_hash, is_demo=is_demo, simulator=True,
+        environment=environment,
         scenario="none", mission_start=t - timedelta(days=142, hours=6) if is_demo else t,
         created_at=t, last_active=t)).inserted_primary_key[0]
     for m, spec in ALL_METRICS.items():
@@ -163,8 +185,12 @@ def create_mission(conn, name, pw_hash, code=None, is_demo=False, demo_crew=True
             mission_id=mid, name=f"Habitat · {spec['label']}", metric=m, subject="ship",
             crew_id=None, api_key=new_key(), active=True))
     if demo_crew:
+        from .seed import seed_checkins, seed_history
         for cname, role, over in DEMO_CREW:
-            add_crew_member(conn, mid, cname, role, "Fictional demo crew member", over)
+            cid = add_crew_member(conn, mid, cname, role, "Fictional demo crew member", over)
+            seed_checkins(conn, mid, cid, days=7)
+        if is_demo:
+            seed_history(conn, mid, days=7)
     return mid
 
 
@@ -177,15 +203,22 @@ def init_db():
         old.reflect(engine)
         old.drop_all(engine)
     meta.create_all(engine)
+    _upgrade()
     with engine.begin() as conn:
         if conn.execute(select(users.c.id)).first() is None:
             conn.execute(insert(users).values(
                 username="admin", role="admin",
                 pw_hash=hash_password(os.getenv("ADMIN_PASSWORD", "aura-admin"))))
-        if conn.execute(select(missions.c.id).where(missions.c.code == DEMO_CODE)).first() is None:
+        demo = conn.execute(select(missions.c.id).where(missions.c.code == DEMO_CODE)).first()
+        if demo is None:
             create_mission(conn, "AURA Demo Mission",
                            hash_password(os.getenv("ADMIN_PASSWORD", "aura-admin")),
                            code=DEMO_CODE, is_demo=True)
+        elif conn.execute(select(checkins.c.id).where(checkins.c.mission_id == demo.id)).first() is None:
+            from .seed import seed_checkins, seed_history   # demo created by an earlier version
+            for (cid,) in conn.execute(select(crew.c.id).where(crew.c.mission_id == demo.id)).all():
+                seed_checkins(conn, demo.id, cid, days=7)
+            seed_history(conn, demo.id, days=7)
 
 
 def delete_mission(conn, mid):
@@ -193,9 +226,25 @@ def delete_mission(conn, mid):
     from sqlalchemy import delete
     sids = select(sensors.c.id).where(sensors.c.mission_id == mid)
     conn.execute(delete(readings).where(readings.c.sensor_id.in_(sids)))
-    for t in (chats, audit, sensors, limits, crew):
+    conn.execute(delete(rollups).where(rollups.c.sensor_id.in_(sids)))
+    for t in (chats, audit, checkins, sensors, limits, crew):
         conn.execute(delete(t).where(t.c.mission_id == mid))
     conn.execute(delete(missions).where(missions.c.id == mid))
+
+
+def _upgrade():
+    """In-place upgrades for databases created by earlier versions."""
+    from sqlalchemy import text
+    cols = {c["name"] for c in inspect(engine).get_columns("missions")}
+    if "environment" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE missions ADD COLUMN environment VARCHAR(20) DEFAULT 'spacecraft'"))
+    with engine.begin() as conn:  # limits for metrics added later
+        for (mid,) in conn.execute(select(missions.c.id)).all():
+            have = {r.metric for r in conn.execute(select(limits.c.metric).where(limits.c.mission_id == mid))}
+            for m, spec in ALL_METRICS.items():
+                if m not in have:
+                    conn.execute(insert(limits).values(mission_id=mid, metric=m, **spec))
 
 
 def get_mission(conn, code):

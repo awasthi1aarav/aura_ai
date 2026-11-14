@@ -12,7 +12,8 @@ from datetime import timedelta, timezone
 from sqlalchemy import select
 
 from . import db
-from .metrics import ALL_METRICS, BASELINE_TOLERANCE, CREW_METRICS, SHIP_METRICS, DECIMALS
+from . import knowledge
+from .metrics import ALL_METRICS, BASELINE_TOLERANCE, CHECKIN_METRICS, CREW_METRICS, DECIMALS, SHIP_METRICS
 
 WINDOW_MIN = 10       # history pulled per sensor
 TREND_MIN = 5         # minutes used for the trend line
@@ -93,6 +94,10 @@ def compute(mission_id):
                                  .order_by(db.readings.c.ts.desc()).limit(1)).first()
                 if r:
                     latest_any[sid] = r
+        crew_ids = [c.id for c in crew_rows]
+        checks = list(conn.execute(select(db.checkins).where(
+            db.checkins.c.crew_id.in_(crew_ids or [-1]), db.checkins.c.ts >= t_now - timedelta(days=30))
+            .order_by(db.checkins.c.ts)))
 
     alerts = []
     by_subject = {}
@@ -157,14 +162,14 @@ def compute(mission_id):
                                    crew_id=s.crew_id, metric=s.metric, who=where,
                                    message=f"{item['label']} {item['trend']} — projected to reach critical "
                                            f"({_fmt(s.metric, crit)} {item['unit']}) in ~{max(1, round(eta_c))} min",
-                                   value=v, eta_min=round(eta_c)))
+                                   value=v, eta_min=round(eta_c), dir="high" if direction > 0 else "low"))
             elif eta_w is not None and eta_w <= HORIZON_MIN / 2:
                 item["prediction"] = dict(level="warning", eta_min=round(eta_w), bound=warn)
                 alerts.append(dict(severity="watch", kind="prediction", subject=s.subject,
                                    crew_id=s.crew_id, metric=s.metric, who=where,
                                    message=f"{item['label']} {item['trend']} — likely to leave the safe range "
                                            f"in ~{max(1, round(eta_w))} min",
-                                   value=v, eta_min=round(eta_w)))
+                                   value=v, eta_min=round(eta_w), dir="high" if direction > 0 else "low"))
 
         # --- personal baseline ---
         if s.subject == "crew" and s.metric in CREW_METRICS and not stale:
@@ -181,22 +186,99 @@ def compute(mission_id):
                                                f"their pre-flight baseline ({_fmt(s.metric, base)})",
                                        value=v, eta_min=None))
 
+    # --- daily self check-ins, routine and streaks ---
+    by_crew = {}
+    for ck in checks:
+        by_crew.setdefault(ck.crew_id, []).append(ck)
+    wellness = {}
+    for c in crew_rows:
+        mine_ck = by_crew.get(c.id, [])
+        last = mine_ck[-1] if mine_ck else None
+        last_ts = (last.ts.replace(tzinfo=timezone.utc) if last and last.ts.tzinfo is None else last.ts) if last else None
+        fresh = last is not None and (t_now - last_ts) < timedelta(hours=36)
+        items = []
+        for metric in CHECKIN_METRICS:
+            lim = lims.get(metric)
+            v = getattr(last, metric) if fresh else None
+            hist = [getattr(k, metric) for k in mine_ck[-7:] if getattr(k, metric) is not None]
+            st = _status(v, lim) if v is not None else "nodata"
+            items.append(dict(metric=metric, label=lim.label if lim else CHECKIN_METRICS[metric]["label"],
+                              unit=lim.unit if lim else CHECKIN_METRICS[metric]["unit"], value=v, status=st,
+                              history=hist, **knowledge.tag(metric)))
+            if st in ("warning", "critical"):
+                alerts.append(dict(severity=st, kind="checkin", subject="crew", crew_id=c.id, metric=metric,
+                                   who=c.name, value=v, eta_min=None,
+                                   message=f"Check-in: {items[-1]['label'].lower()} {_fmt(metric, v)} {items[-1]['unit']} "
+                                           + ("needs attention" if st == "critical" else "is outside the healthy range")))
+        sleeps = [k.sleep_hours for k in mine_ck[-3:] if k.sleep_hours is not None]
+        if len(sleeps) == 3 and sum(sleeps) / 3 < 6.5 and all(i["status"] == "ok" for i in items if i["metric"] == "sleep_hours"):
+            alerts.append(dict(severity="watch", kind="checkin", subject="crew", crew_id=c.id, metric="sleep_hours",
+                               who=c.name, value=sleeps[-1], eta_min=None, dir="low",
+                               message=f"Sleep averaging {sum(sleeps)/3:.1f} h over the last 3 nights"))
+        due = last is None or (t_now - last_ts) > timedelta(hours=24)
+        if due:
+            alerts.append(dict(severity="watch", kind="routine", subject="crew", crew_id=c.id, metric=None,
+                               who=c.name, value=None, eta_min=None,
+                               message="Daily health check-in is due"))
+        days_done = {(k.ts.replace(tzinfo=timezone.utc) if k.ts.tzinfo is None else k.ts).date() for k in mine_ck}
+        today = t_now.date()
+        d = today if today in days_done else today - timedelta(days=1)
+        streak = 0
+        while d in days_done:
+            streak += 1
+            d -= timedelta(days=1)
+        today_ck = last if last is not None and last_ts.date() == today else None
+        tasks = [
+            dict(key="checkin", label="Morning health check-in", done=today_ck is not None),
+            dict(key="sleep", label="Sleep 7 h or more", done=bool(today_ck and (today_ck.sleep_hours or 0) >= 7)),
+            dict(key="exercise", label="Exercise 60 min or more", done=bool(today_ck and (today_ck.exercise_min or 0) >= 60)),
+        ]
+        wellness[c.id] = dict(checkin=items, last_checkin=last_ts.isoformat() if last else None, due=due,
+                              streak=streak, tasks=tasks,
+                              symptoms=[x for x in (last.symptoms or "").split(",") if x] if fresh else [])
+
+    # --- tag every alert with its NASA hazard / HRP risk and an action card ---
+    for a in alerts:
+        a.update(knowledge.tag(a["metric"]) if a["metric"] else dict(hazard=None, hazard_label=None, risk=None))
+        a["action"] = (knowledge.guidance(a["metric"], a["value"], lims.get(a["metric"]), a.get("dir"))
+                       if a["metric"] and a["value"] is not None else None)
+        if a["kind"] == "routine":
+            a["action"] = dict(now=["Open Check-in and log blood sugar, sleep, mood, exercise and any symptoms"],
+                               escalate="Takes about one minute. Daily check-ins let AURA spot slow changes early.")
+    for lst in by_subject.values():
+        for item in lst:
+            item.update(knowledge.tag(item["metric"]))
+
     order = {m: i for i, m in enumerate(list(CREW_METRICS) + list(SHIP_METRICS))}
     crew_out = []
     for c in crew_rows:
         items = sorted(by_subject.get(("crew", c.id), []), key=lambda i: order.get(i["metric"], 99))
-        mine = [a for a in alerts if a["subject"] == "crew" and a["crew_id"] == c.id]
+        mine = [a for a in alerts if a["subject"] == "crew" and a["crew_id"] == c.id and a["kind"] != "routine"]
         score = sum({"critical": 4, "warning": 2, "watch": 1}[a["severity"]] for a in mine)
         risk = "high" if score >= 4 or any(a["severity"] == "critical" for a in mine) else \
                "watch" if score >= 1 else "low"
-        crew_out.append(dict(id=c.id, name=c.name, role=c.role, risk=risk, score=score, metrics=items))
+        health = max(0, 100 - sum({"critical": 25, "warning": 12, "watch": 5}[a["severity"]] for a in mine))
+        crew_out.append(dict(id=c.id, name=c.name, role=c.role, risk=risk, score=score, health=health,
+                             metrics=items, **wellness.get(c.id, {})))
     ship_items = sorted(by_subject.get(("ship", None), []), key=lambda i: order.get(i["metric"], 99))
     ship_status = "critical" if any(i["status"] == "critical" for i in ship_items) else \
                   "warning" if any(i["status"] == "warning" for i in ship_items) else "ok"
-    alerts.sort(key=lambda a: (SEVERITY_ORDER[a["severity"]], a["eta_min"] if a["eta_min"] is not None else 999))
+    alerts.sort(key=lambda a: (SEVERITY_ORDER[a["severity"]], a["kind"] == "routine",
+                               a["eta_min"] if a["eta_min"] is not None else 999))
 
+    sev_rank = {"critical": 3, "warning": 2, "watch": 1}
+    env = knowledge.ENVIRONMENTS.get(m.environment or knowledge.DEFAULT_ENV, knowledge.ENVIRONMENTS[knowledge.DEFAULT_ENV])
+    hazards = []
+    for key, label in knowledge.HAZARDS.items():
+        hz = [a for a in alerts if a.get("hazard") == key]
+        worst = max((a["severity"] for a in hz), key=lambda x: sev_rank[x], default=None)
+        risks = sorted({a["risk"] for a in hz if a.get("risk")})
+        metrics = [k for k, (h, _) in knowledge.METRIC_HAZARD.items() if h == key]
+        hazards.append(dict(key=key, label=label, status=worst or "ok", count=len(hz), risks=risks, metrics=metrics))
     ms = m.mission_start
-    data = dict(updated=t_now.isoformat(), crew=crew_out,
+    data = dict(updated=t_now.isoformat(), crew=crew_out, hazards=hazards,
+                environment=dict(key=m.environment or knowledge.DEFAULT_ENV, **env),
+                crew_health=round(sum(c["health"] for c in crew_out) / len(crew_out)) if crew_out else None,
                 ship=dict(status=ship_status, metrics=ship_items), alerts=alerts,
                 simulator=dict(enabled=bool(m.simulator), scenario=m.scenario or "none",
                                scenario_crew=m.scenario_crew),

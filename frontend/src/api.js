@@ -74,7 +74,7 @@ export async function api(path, { method = 'GET', body, form, signal } = {}) {
 
 export function fmt(v, metric) {
   if (v === null || v === undefined) return '—'
-  const d = { body_temp: 1, cabin_co2: 2, cabin_pressure: 1, cabin_temp: 1 }[metric] ?? 0
+  const d = { body_temp: 1, cabin_co2: 2, cabin_pressure: 1, cabin_temp: 1, sleep_hours: 1 }[metric] ?? 0
   return Number(v).toFixed(d)
 }
 

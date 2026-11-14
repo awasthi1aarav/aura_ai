@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { api, getMission, isHost, mpath, setToken } from '../api.js'
+import { ENVS } from './Host.jsx'
 
 const TABS = ['Crew', 'Sensors', 'Limits', 'Readings', 'Simulator', 'Connect a sensor', 'Mission', 'Activity']
 const CREW_METRICS = ['heart_rate', 'spo2', 'bp_sys', 'bp_dia', 'resp_rate', 'body_temp']
@@ -140,7 +141,7 @@ function Sensors({ meta }) {
             <label>Name<input required value={add.name} onChange={e => setAdd({ ...add, name: e.target.value })} placeholder="e.g. Chest strap HR" /></label>
             <label>Measures
               <select value={add.metric} onChange={e => setAdd({ ...add, metric: e.target.value })}>
-                {meta && Object.entries(meta.metrics).map(([k, v]) => <option key={k} value={k}>{v.label} ({v.unit})</option>)}
+                {meta && Object.entries(meta.metrics).filter(([k]) => !['glucose', 'sleep_hours', 'mood'].includes(k)).map(([k, v]) => <option key={k} value={k}>{v.label} ({v.unit})</option>)}
               </select>
             </label>
             {CREW_METRICS.includes(add.metric) && (
@@ -369,13 +370,14 @@ function MissionTab() {
   const [info, setInfo] = useState(null)
   const [name, setName] = useState('')
   const [pw, setPw] = useState('')
+  const [env, setEnv] = useState('spacecraft')
   const [msg, setMsg] = useState('')
-  useEffect(() => { api(mpath('/meta')).then(d => { setInfo(d.mission); setName(d.mission.name) }).catch(() => {}) }, [])
+  useEffect(() => { api(mpath('/meta')).then(d => { setInfo(d.mission); setName(d.mission.name); setEnv(d.mission.environment) }).catch(() => {}) }, [])
   const link = `${window.location.origin}/#/m/${getMission()}`
   async function save(e) {
     e.preventDefault()
     try {
-      await api(mpath('/admin/mission'), { method: 'PUT', body: { name: name || null, password: pw || null } })
+      await api(mpath('/admin/mission'), { method: 'PUT', body: { name: name || null, password: pw || null, environment: env } })
       setPw(''); setMsg('Saved.')
     } catch (er) { setMsg(er.message) }
   }
@@ -404,9 +406,14 @@ function MissionTab() {
         <div className="k">Settings</div>
         <div className="grid3">
           <label>Mission name<input value={name} minLength={2} maxLength={60} onChange={e => setName(e.target.value)} /></label>
+          <label>Environment
+            <select value={env} onChange={e => setEnv(e.target.value)}>
+              {ENVS.map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+          </label>
           <label>New password (optional, min 8)<input type="password" minLength={8} value={pw} onChange={e => setPw(e.target.value)} autoComplete="new-password" /></label>
-          <label>&nbsp;<button className="btn gold">Save</button></label>
         </div>
+        <button className="btn gold">Save</button>
       </form>
       {!info.is_demo && (
         <div className="editor danger-zone">

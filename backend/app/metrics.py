@@ -42,7 +42,18 @@ SHIP_METRICS = {
                       source="Mission-defined alert levels (ISS background is roughly 20 µSv/h)"),
 }
 
-ALL_METRICS = {**CREW_METRICS, **SHIP_METRICS}
+# Entered by the astronaut in the daily self check-in (not continuous sensors).
+CHECKIN_METRICS = {
+    "glucose": dict(label="Blood sugar", unit="mg/dL", warn_low=70, warn_high=180,
+                    crit_low=54, crit_high=250,
+                    source="ADA hypoglycaemia levels (<70 / <54 mg/dL) and common high-glucose targets; adjustable"),
+    "sleep_hours": dict(label="Sleep", unit="h", warn_low=6, warn_high=11, crit_low=4, crit_high=14,
+                        source="Adult sleep guidance (7\u20139 h per night); adjustable"),
+    "mood": dict(label="Mood", unit="/5", warn_low=3, warn_high=None, crit_low=1.5, crit_high=None,
+                 source="Self-rated 1\u20135; 2 = watch, 1 = needs attention"),
+}
+
+ALL_METRICS = {**CREW_METRICS, **SHIP_METRICS, **CHECKIN_METRICS}
 
 # Normal "resting" values used by the simulator for the ship.
 SHIP_NOMINAL = {
@@ -69,6 +80,7 @@ SIM_NOISE = {
     "cabin_temp": 0.08, "humidity": 0.5, "radiation": 1.2,
 }
 DECIMALS = {
+    "glucose": 0, "sleep_hours": 1, "mood": 0,
     "heart_rate": 0, "spo2": 0, "bp_sys": 0, "bp_dia": 0, "resp_rate": 0, "body_temp": 1,
     "cabin_co2": 2, "cabin_o2": 0, "cabin_pressure": 1, "cabin_temp": 1,
     "humidity": 0, "radiation": 0,

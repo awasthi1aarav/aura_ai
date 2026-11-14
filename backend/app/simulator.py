@@ -112,10 +112,22 @@ IDLE_DAYS = 7         # hosted missions untouched this long are deleted
 
 
 def prune():
+    """Roll raw simulator readings older than KEEP_HOURS into hourly averages, then delete them."""
+    cutoff = (db.now() - timedelta(hours=KEEP_HOURS)).replace(minute=0, second=0, microsecond=0)
     with db.engine.begin() as conn:
-        conn.execute(delete(db.readings).where(
-            db.readings.c.ts < db.now() - timedelta(hours=KEEP_HOURS),
-            db.readings.c.source == "simulator"))
+        old = conn.execute(select(db.readings.c.sensor_id, db.readings.c.value, db.readings.c.ts).where(
+            db.readings.c.ts < cutoff, db.readings.c.source == "simulator")).all()
+        buckets = {}
+        for sid, v, ts in old:
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            buckets.setdefault((sid, ts.replace(minute=0, second=0, microsecond=0)), []).append(v)
+        if buckets:
+            conn.execute(insert(db.rollups), [
+                dict(sensor_id=sid, hour=h, avg=sum(vs) / len(vs), min=min(vs), max=max(vs), n=len(vs))
+                for (sid, h), vs in buckets.items()])
+        conn.execute(delete(db.readings).where(db.readings.c.ts < cutoff, db.readings.c.source == "simulator"))
+        conn.execute(delete(db.rollups).where(db.rollups.c.hour < db.now() - timedelta(days=8)))
         idle = conn.execute(select(db.missions.c.id).where(
             db.missions.c.is_demo.is_(False),
             db.missions.c.last_active < db.now() - timedelta(days=IDLE_DAYS))).all()

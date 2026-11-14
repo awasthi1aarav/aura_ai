@@ -27,8 +27,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, insert, select, update
 
-from . import analysis, chat, db, simulator
-from .metrics import ALL_METRICS, CREW_METRICS
+from . import analysis, chat, db, knowledge, simulator
+from .metrics import ALL_METRICS, CHECKIN_METRICS, CREW_METRICS
 from .security import check_password, client_ip, hash_password, limiter, make_token, read_token
 
 CHAT_PER_MIN = 10          # per visitor
@@ -163,10 +163,14 @@ def health():
     return {"ok": True, "time": db.now().isoformat()}
 
 
+ENV_PATTERN = "^(" + "|".join(knowledge.ENVIRONMENTS) + ")$"
+
+
 class HostIn(BaseModel):
     name: str = Field(min_length=2, max_length=60)
     password: str = Field(min_length=8, max_length=200)
     demo_crew: bool = True
+    environment: str = Field(knowledge.DEFAULT_ENV, pattern=ENV_PATTERN)
 
 
 @app.post("/api/missions")
@@ -182,7 +186,7 @@ def host_mission(body: HostIn, request: Request):
             if not db.get_mission(conn, code):
                 break
         mid = db.create_mission(conn, body.name.strip(), hash_password(body.password), code=code,
-                                demo_crew=body.demo_crew)
+                                demo_crew=body.demo_crew, environment=body.environment)
     log_action(mid, "host", ip, "mission created", body.name.strip())
     return {"code": code, "name": body.name.strip(), "token": make_token("host", "host", mid)}
 
@@ -221,7 +225,89 @@ def meta(m=Depends(mission)):
     return {"metrics": ALL_METRICS, "scenarios": simulator.SCENARIOS,
             "crew_scenarios": sorted(simulator.CREW_SCENARIOS),
             "ai": "gemini" if os.getenv("GEMINI_API_KEY") else "offline",
-            "mission": {"code": m.code, "name": m.name, "is_demo": bool(m.is_demo)}}
+            "environments": knowledge.ENVIRONMENTS, "symptoms": SYMPTOMS,
+            "mission": {"code": m.code, "name": m.name, "is_demo": bool(m.is_demo),
+                        "environment": m.environment or knowledge.DEFAULT_ENV}}
+
+
+# ---------------- one mission: astronaut self check-in + history ----------------
+SYMPTOMS = ["headache", "nausea", "dizziness", "congestion", "back pain", "fatigue", "poor sleep",
+            "eye or vision change", "chest pain", "shortness of breath", "skin rash", "muscle pain"]
+
+
+class CheckIn(BaseModel):
+    crew_id: int
+    glucose: Optional[float] = Field(None, ge=20, le=600)
+    sleep_hours: Optional[float] = Field(None, ge=0, le=24)
+    mood: Optional[int] = Field(None, ge=1, le=5)
+    exercise_min: Optional[float] = Field(None, ge=0, le=600)
+    symptoms: list[str] = Field([], max_length=12)
+    note: str = Field("", max_length=300)
+
+
+@app.post("/api/m/{code}/checkin")
+def checkin(body: CheckIn, request: Request, m=Depends(mission)):
+    if not limiter.hit(f"checkin:{client_ip(request)}", 30, 3600):
+        raise HTTPException(429, "Too many check-ins. Try again later.")
+    bad = [x for x in body.symptoms if x not in SYMPTOMS]
+    if bad:
+        raise HTTPException(422, f"Unknown symptom: {bad[0]}")
+    with db.engine.begin() as conn:
+        _owned(conn, db.crew, body.crew_id, m.id)
+        conn.execute(insert(db.checkins).values(
+            mission_id=m.id, crew_id=body.crew_id, ts=db.now(), glucose=body.glucose,
+            sleep_hours=body.sleep_hours, mood=body.mood, exercise_min=body.exercise_min,
+            symptoms=",".join(body.symptoms), note=body.note.strip()))
+    analysis.invalidate(m.id)
+    _touch(m.id)
+    return {"ok": True}
+
+
+@app.get("/api/m/{code}/checkins")
+def list_checkins(crew_id: int, m=Depends(mission)):
+    with db.engine.connect() as conn:
+        _owned(conn, db.crew, crew_id, m.id)
+        rows = conn.execute(select(db.checkins).where(db.checkins.c.crew_id == crew_id)
+                            .order_by(db.checkins.c.ts.desc()).limit(30))
+        return [dict(id=r.id, ts=r.ts.isoformat(), glucose=r.glucose, sleep_hours=r.sleep_hours, mood=r.mood,
+                     exercise_min=r.exercise_min, symptoms=[x for x in (r.symptoms or "").split(",") if x],
+                     note=r.note) for r in rows]
+
+
+@app.get("/api/m/{code}/history")
+def history(metric: str, crew_id: Optional[int] = None, range: str = "24h", m=Depends(mission)):
+    """Hourly points for a sensor metric (24h or 7d), or daily check-in values (7d)."""
+    from datetime import timedelta
+    span = timedelta(days=7) if range == "7d" else timedelta(hours=24)
+    since = db.now() - span
+    with db.engine.connect() as conn:
+        if metric in CHECKIN_METRICS:
+            if not crew_id:
+                raise HTTPException(422, "crew_id required")
+            _owned(conn, db.crew, crew_id, m.id)
+            rows = conn.execute(select(db.checkins.c.ts, getattr(db.checkins.c, metric)).where(
+                db.checkins.c.crew_id == crew_id, db.checkins.c.ts >= db.now() - timedelta(days=7))
+                .order_by(db.checkins.c.ts)).all()
+            return {"metric": metric, "points": [dict(t=r[0].isoformat(), v=r[1]) for r in rows if r[1] is not None]}
+        q = select(db.sensors.c.id).where(db.sensors.c.mission_id == m.id, db.sensors.c.metric == metric)
+        q = q.where(db.sensors.c.crew_id == crew_id) if crew_id else q.where(db.sensors.c.subject == "ship")
+        sid = conn.execute(q.limit(1)).scalar()
+        if not sid:
+            raise HTTPException(404, "No sensor for that metric")
+        buckets = {}
+        for h, avg, n in conn.execute(select(db.rollups.c.hour, db.rollups.c.avg, db.rollups.c.n).where(
+                db.rollups.c.sensor_id == sid, db.rollups.c.hour >= since)):
+            h = h.replace(tzinfo=timezone.utc) if h.tzinfo is None else h
+            buckets.setdefault(h, []).append((avg, n or 1))
+        for v, ts in conn.execute(select(db.readings.c.value, db.readings.c.ts).where(
+                db.readings.c.sensor_id == sid, db.readings.c.ts >= since)):
+            ts = ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts
+            buckets.setdefault(ts.replace(minute=0, second=0, microsecond=0), []).append((v, 1))
+    pts = []
+    for h in sorted(buckets):
+        tot = sum(n for _, n in buckets[h])
+        pts.append(dict(t=h.isoformat(), v=round(sum(a * n for a, n in buckets[h]) / tot, 2)))
+    return {"metric": metric, "points": pts}
 
 
 class ChatIn(BaseModel):
@@ -421,8 +507,8 @@ def list_sensors(m=Depends(require_host)):
 
 @app.post("/api/m/{code}/admin/sensors")
 def add_sensor(body: SensorIn, m=Depends(require_host)):
-    if body.metric not in ALL_METRICS:
-        raise HTTPException(422, "Unknown metric")
+    if body.metric not in ALL_METRICS or body.metric in CHECKIN_METRICS:
+        raise HTTPException(422, "Unknown sensor metric (check-in values are entered by the crew)")
     subject = "crew" if body.metric in CREW_METRICS else "ship"
     with db.engine.begin() as conn:
         if subject == "crew":
@@ -579,6 +665,15 @@ def set_sim(body: SimIn, m=Depends(require_host)):
     return {"ok": True}
 
 
+@app.delete("/api/m/{code}/admin/checkins/{cid}")
+def delete_checkin(cid: int, m=Depends(require_host)):
+    with db.engine.begin() as conn:
+        _owned(conn, db.checkins, cid, m.id)
+        conn.execute(delete(db.checkins).where(db.checkins.c.id == cid))
+    analysis.invalidate(m.id)
+    return {"ok": True}
+
+
 @app.get("/api/m/{code}/admin/audit")
 def mission_audit(limit: int = 200, m=Depends(require_host)):
     with db.engine.connect() as conn:
@@ -591,6 +686,7 @@ def mission_audit(limit: int = 200, m=Depends(require_host)):
 class MissionEdit(BaseModel):
     name: Optional[str] = Field(None, min_length=2, max_length=60)
     password: Optional[str] = Field(None, min_length=8, max_length=200)
+    environment: Optional[str] = Field(None, pattern=ENV_PATTERN)
 
 
 @app.put("/api/m/{code}/admin/mission")
@@ -600,6 +696,8 @@ def edit_mission(body: MissionEdit, m=Depends(require_host)):
         vals["name"] = body.name.strip()
     if body.password:
         vals["pw_hash"] = hash_password(body.password)
+    if body.environment:
+        vals["environment"] = body.environment
     if vals:
         with db.engine.begin() as conn:
             conn.execute(update(db.missions).where(db.missions.c.id == m.id).values(**vals))

@@ -1,6 +1,20 @@
 # Data and resources
 
-## NASA
+## Official challenge resources (all used)
+
+| Resource | How AURA uses it |
+|---|---|
+| NASA HRP: **5 Hazards of Human Spaceflight** | Hazard watch panel; every metric and alert is mapped to a hazard |
+| NASA HRP: **Risks of Human Spaceflight** | Alerts and body-map systems name the HRP risk (e.g. Risk of Hypoxia, Risk of Cardiovascular Adaptations, Risk of Inadequate Sleep and Irregular Schedules, SANS) |
+| NASA HRP: **Ongoing HRP Research** | Informed the indicators chosen: sleep and activity tracking (e.g. ARCHeR), standard measures, immune markers |
+| CSA: **Monitoring Radiation for Astronaut Health** | Radiation monitoring in the habitat panel and the space-radiation hazard |
+| CSA: **Why Do We Conduct Science Experiments in Space?** | Body-map explanations of how spaceflight affects bones, heart, vessels and brain |
+
+Links: https://www.nasa.gov/hrp/hazards/ · https://www.nasa.gov/hrp/risks/ · https://www.nasa.gov/hrp/ongoing-hrp-research/ ·
+https://www.asc-csa.gc.ca/eng/news/articles/2026/2026-02-26-monitoring-radiation-astronaut-health.asp ·
+https://www.asc-csa.gc.ca/eng/iss/science/why-do-we-conduct-science-experiments-in-space.asp
+
+## NASA (additional)
 
 | Resource | How AURA uses it |
 |---|---|
@@ -25,6 +39,7 @@ Links:
 
 ## Other
 
+- Blood-sugar alert levels follow ADA hypoglycaemia levels (<70 / <54 mg/dL); sleep bands follow adult guidance of 7–9 h. All are adjustable per mission.
 - Vital-sign bands follow the general shape of clinical early-warning scores (NEWS2-style). They are starting values that mission medical staff can change in Admin → Limits.
 - Radiation alert levels are mission-defined placeholders, not NASA limits.
 - **All crew members and live readings in the demo are fictional or simulated.** No real personal health data is used.

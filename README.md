@@ -19,6 +19,19 @@ the assistant; changing anything needs the mission password. Changes in one miss
 another. A shared **Demo mission** (`DEMO`) is the default page. Missions with no visitors for 7 days
 are removed automatically.
 
+## Built around NASA's challenge
+
+| Challenge asks for | AURA |
+|---|---|
+| Astronauts assess their own health | **Daily self check-in** (blood sugar, sleep, mood, exercise, symptoms) on each crew member's **health profile** |
+| Suggested indicators: BP, heart rate, blood sugar, temperature, sleep, mood | All six, plus SpO₂, respiration and the cabin environment |
+| NASA's five hazards of spaceflight | **Hazard watch** panel; every alert is tagged with its hazard and NASA HRP risk |
+| Clickable human body figure | **Interactive body map**: each system shows status, readings, what spaceflight does to it, how to measure it, and the HRP risk |
+| Guidance; when to involve flight surgeons | **Action cards** on every alert: what to do now and when to escalate |
+| Prompt measurements as a routine; gamification | Check-in reminders, **today's routine** checklist, **streaks** and a **health score** |
+| Charts over time; color coding | **24-hour / 7-day trend charts** with the healthy range shaded; status colors throughout |
+| Different environments | Each mission is a **space station, deep-space spacecraft, lunar base, lunar rover or Mars base**, with its gravity and signal delay shown and given to the assistant |
+
 ## The four parts
 
 | Part | What it does |
