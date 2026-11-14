@@ -111,20 +111,22 @@ async def reply(message, history, crew_id=None):
     contents.append({"role": "user", "parts": [{"text": f"LIVE TELEMETRY\n{context}\n\nQUESTION: {message[:2000]}"}]})
     body = {"system_instruction": {"parts": [{"text": SYSTEM}]}, "contents": contents,
             "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2048}}
-    models = [_working["model"]] if _working["model"] else MODELS
-    async with httpx.AsyncClient(timeout=30) as client:
+    models = ([_working["model"]] if _working["model"] else []) + [m for m in MODELS if m != _working["model"]]
+    async with httpx.AsyncClient(timeout=25) as client:
         for model in models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             try:
                 r = await client.post(url, headers={"x-goog-api-key": key}, json=body)
             except Exception as e:
                 log.error("Gemini request error (%s): %s", model, type(e).__name__)
-                break
+                continue
             if r.status_code == 404:
                 log.error("Gemini model %s not found, trying next", model)
                 continue
             if r.status_code != 200:
-                log.error("Gemini HTTP %s (%s): %s", r.status_code, model, r.text[:300])
+                log.error("Gemini HTTP %s (%s): %s", r.status_code, model, r.text[:200].replace("\n", " "))
+                if r.status_code in (429, 500, 503):
+                    continue  # busy or rate-limited: try the next model
                 break
             try:
                 cand = r.json()["candidates"][0]
