@@ -199,7 +199,7 @@ async def restore_mission(request: Request, file: UploadFile = File(...), name: 
     ip = client_ip(request)
     if not (2 <= len(name.strip()) <= 60) or not (8 <= len(password) <= 200):
         raise HTTPException(422, "Name must be 2-60 characters and password at least 8")
-    if not limiter.hit(f"host:{ip}", HOSTS_PER_HOUR, 3600):
+    if limiter.count(f"host:{ip}", 3600) >= HOSTS_PER_HOUR:
         raise HTTPException(429, "You've hosted several missions recently. Try again later.")
     raw = await file.read(30_000_001)
     if len(raw) > 30_000_000:
@@ -216,6 +216,7 @@ async def restore_mission(request: Request, file: UploadFile = File(...), name: 
                                               lambda e: e in knowledge.ENVIRONMENTS)
     except ValueError as e:
         raise HTTPException(422, str(e))
+    limiter.hit(f"host:{ip}", 10_000, 3600)   # only successful restores count toward the hourly limit
     log_action(mid, "host", ip, "mission restored from backup", json.dumps(counts))
     return {"code": code, "name": name.strip(), "token": make_token("host", "host", mid), "restored": counts}
 
@@ -383,6 +384,67 @@ def records(crew_id: int, days: int = 30, q: str = "", kind: str = "all", m=Depe
         out = [o for o in out if needle in " ".join(str(v) for v in o.values()).lower()]
     out.sort(key=lambda o: o["ts"], reverse=True)
     return out
+
+
+class ChatIn(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    crew_id: Optional[int] = None
+
+
+def _client(x_client_id: Optional[str] = Header(None)):
+    if not x_client_id or not CLIENT_ID.match(x_client_id):
+        raise HTTPException(400, "Missing or invalid X-Client-Id")
+    return x_client_id
+
+
+def _chat_scope(q, mid, crew_id, client):
+    q = q.where(db.chats.c.mission_id == mid, db.chats.c.client_id == client)
+    return q.where(db.chats.c.crew_id == crew_id) if crew_id else q.where(db.chats.c.crew_id.is_(None))
+
+
+def _history(mid, crew_id, client, limit=50):
+    q = _chat_scope(select(db.chats), mid, crew_id, client)
+    q = q.order_by(db.chats.c.ts.desc(), db.chats.c.id.desc()).limit(limit)
+    with db.engine.connect() as conn:
+        rows = list(conn.execute(q))
+    return [dict(id=r.id, role=r.role, text=r.text, source=r.source, ts=r.ts.isoformat()) for r in reversed(rows)]
+
+
+@app.get("/api/m/{code}/chat/history")
+def chat_history(crew_id: Optional[int] = None, client: str = Depends(_client), m=Depends(mission)):
+    """Only the conversation started from this browser, in this mission."""
+    return _history(m.id, crew_id, client)
+
+
+@app.delete("/api/m/{code}/chat/history")
+def clear_history(crew_id: Optional[int] = None, client: str = Depends(_client), m=Depends(mission)):
+    with db.engine.begin() as conn:
+        conn.execute(_chat_scope(delete(db.chats), m.id, crew_id, client))
+    return {"ok": True}
+
+
+@app.post("/api/m/{code}/chat")
+async def chat_endpoint(body: ChatIn, request: Request, client: str = Depends(_client), m=Depends(mission)):
+    ip = client_ip(request)
+    if not limiter.hit(f"chat:{ip}", CHAT_PER_MIN, 60):
+        raise HTTPException(429, "Too many questions. Please wait a minute.")
+    if not limiter.hit("chat:all", CHAT_PER_HOUR_ALL, 3600):
+        raise HTTPException(429, "The assistant is busy. Please try again later.")
+    if body.crew_id:
+        with db.engine.connect() as conn:
+            if not conn.execute(select(db.crew.c.id).where(db.crew.c.id == body.crew_id,
+                                                           db.crew.c.mission_id == m.id)).first():
+                raise HTTPException(404, "Crew member not found in this mission")
+    history = [{"role": h["role"], "text": h["text"]} for h in _history(m.id, body.crew_id, client, 8)]
+    text, source = await chat.reply(m.id, body.message, history, body.crew_id)
+    with db.engine.begin() as conn:
+        conn.execute(insert(db.chats), [
+            dict(mission_id=m.id, crew_id=body.crew_id, client_id=client, role="user", text=body.message,
+                 source="", ts=db.now()),
+            dict(mission_id=m.id, crew_id=body.crew_id, client_id=client, role="assistant", text=text,
+                 source=source, ts=db.now()),
+        ])
+    return {"reply": text, "source": source}
 
 
 # ---------------- sensor ingest ----------------
