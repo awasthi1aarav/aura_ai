@@ -45,7 +45,7 @@ Each one develops over a few minutes, so the forecast flags it **before** it cro
 
 - **Backend:** Python, FastAPI, SQLAlchemy. Postgres on **Supabase** in production, SQLite locally.
 - **Frontend:** React and Vite, hand-written CSS (no UI kit), served by the backend.
-- **AI:** Google Gemini API (`gemini-2.5-flash`, free tier) through a plain REST call.
+- **AI:** Google Gemini API (free tier; model auto-selected, override with `GEMINI_MODEL`) through a plain REST call.
 - **Hosting:** Render (free web service).
 
 ## Run locally

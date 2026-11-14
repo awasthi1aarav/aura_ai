@@ -12,7 +12,9 @@ log = logging.getLogger("uvicorn.error")
 
 from .analysis import compute
 
-MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+MODELS = [m for m in [os.getenv("GEMINI_MODEL"), "gemini-flash-latest", "gemini-3.5-flash",
+                       "gemini-3-flash-preview", "gemini-2.5-flash"] if m]
+_working = {"model": None}
 DISCLAIMER = "AURA is a decision-support prototype, not a medical device."
 
 SYSTEM = f"""You are AURA, the onboard health assistant of a crewed spacecraft on a long-duration mission.
@@ -108,19 +110,30 @@ async def reply(message, history, crew_id=None):
             contents.append({"role": role, "parts": [{"text": h["text"][:2000]}]})
     contents.append({"role": "user", "parts": [{"text": f"LIVE TELEMETRY\n{context}\n\nQUESTION: {message[:2000]}"}]})
     body = {"system_instruction": {"parts": [{"text": SYSTEM}]}, "contents": contents,
-            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 700}}
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.post(url, params={"key": key}, json=body)
-        if r.status_code != 200:
-            log.error("Gemini HTTP %s: %s", r.status_code, r.text[:500])
-        r.raise_for_status()
-        cand = r.json()["candidates"][0]
-        text = "".join(p.get("text", "") for p in cand["content"]["parts"]).strip()
-        if text:
-            return text, "gemini"
-        log.error("Gemini returned no text: %s", str(cand)[:300])
-    except Exception as e:
-        log.error("Gemini call failed: %r", e)
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2048}}
+    models = [_working["model"]] if _working["model"] else MODELS
+    async with httpx.AsyncClient(timeout=30) as client:
+        for model in models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            try:
+                r = await client.post(url, headers={"x-goog-api-key": key}, json=body)
+            except Exception as e:
+                log.error("Gemini request error (%s): %s", model, type(e).__name__)
+                break
+            if r.status_code == 404:
+                log.error("Gemini model %s not found, trying next", model)
+                continue
+            if r.status_code != 200:
+                log.error("Gemini HTTP %s (%s): %s", r.status_code, model, r.text[:300])
+                break
+            try:
+                cand = r.json()["candidates"][0]
+                text = "".join(p.get("text", "") for p in cand["content"]["parts"]).strip()
+            except (KeyError, IndexError, ValueError):
+                text = ""
+            if text:
+                _working["model"] = model
+                return text, "gemini"
+            log.error("Gemini returned no text (%s)", model)
+            break
     return offline_reply(message, d, rel, crew_id, "AI model unavailable right now"), "offline"
