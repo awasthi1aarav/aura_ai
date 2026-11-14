@@ -2,7 +2,7 @@
 
 **NASA Space Apps Challenge 2026 · Create Health Monitoring Software for Astronauts on Space Missions · Team Orbital Five**
 
-**Live:** https://aura-ai-bk7d.onrender.com
+**Live demo:** https://aura-ai-bk7d.onrender.com
 
 On a long mission, Earth is minutes away by radio and there is no doctor on board. AURA gathers every
 astronaut's vitals and the cabin environment in one place, predicts problems before they become
