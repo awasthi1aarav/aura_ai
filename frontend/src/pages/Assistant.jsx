@@ -29,6 +29,12 @@ export default function Assistant({ data, initialCrew }) {
   useEffect(() => { if (initialCrew) setCrewId(Number(initialCrew)) }, [initialCrew])
   useEffect(() => { if (!crewId && data?.crew?.length) setCrewId(data.crew[0].id) }, [data, crewId])
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }) }, [msgs, busy])
+  useEffect(() => {
+    if (!crewId) return
+    let alive = true
+    api(`/api/chat/history?crew_id=${crewId}`).then(h => alive && setMsgs(h)).catch(() => {})
+    return () => { alive = false }
+  }, [crewId])
 
   const person = data?.crew.find(c => c.id === crewId)
 
@@ -36,21 +42,36 @@ export default function Assistant({ data, initialCrew }) {
     const message = (q ?? text).trim()
     if (!message || busy) return
     setText('')
-    const history = msgs.map(m => ({ role: m.role, text: m.text }))
     setMsgs(m => [...m, { role: 'user', text: message }])
     setBusy(true)
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 60000)
     try {
-      const r = await api('/api/chat', { method: 'POST', body: { message, crew_id: crewId, history } })
+      const res = await fetch('/api/chat', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctrl.signal,
+        body: JSON.stringify({ message, crew_id: crewId }),
+      })
+      if (!res.ok) throw new Error(res.statusText)
+      const r = await res.json()
       setMsgs(m => [...m, { role: 'assistant', text: r.reply, source: r.source }])
     } catch (e) {
-      setMsgs(m => [...m, { role: 'assistant', text: `I couldn't reach the AURA server (${e.message}). Try again in a moment.` }])
+      const why = e.name === 'AbortError' ? 'took too long' : e.message
+      setMsgs(m => [...m, { role: 'assistant', text: `I couldn't get an answer just now (${why}). Please ask again.`, failed: true }])
     } finally {
+      clearTimeout(timer)
       setBusy(false)
     }
   }
 
   function pick(id) {
+    if (id === crewId) return
+    setMsgs([])
     setCrewId(id)
+  }
+
+  async function clearChat() {
+    if (!window.confirm('Clear this conversation?')) return
+    await api(`/api/chat/history?crew_id=${crewId}`, { method: 'DELETE' }).catch(() => {})
     setMsgs([])
   }
 
@@ -87,10 +108,13 @@ export default function Assistant({ data, initialCrew }) {
       <section className="panel chat">
         <div className="panel-head">
           <h2>AURA Assistant</h2>
-          <span className="sub">{person ? `Assessing ${person.name}` : 'Select a crew member'}</span>
+          <span className="sub">
+            {person ? `Assessing ${person.name}` : 'Select a crew member'}
+            {msgs.length > 0 && <button className="link" onClick={clearChat}>Clear history</button>}
+          </span>
         </div>
         <div className="log">
-          {msgs.length === 0 && (
+          {msgs.length === 0 && !busy && (
             <div className="intro">
               <p>
                 Ask about any crew member. AURA reads their live vitals, personal baseline, the cabin

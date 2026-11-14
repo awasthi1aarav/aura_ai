@@ -126,7 +126,7 @@ def compute():
         if item["status"] in ("critical", "warning"):
             alerts.append(dict(severity=item["status"], kind="limit", subject=s.subject,
                                crew_id=s.crew_id, metric=s.metric, who=where,
-                               message=f"{item['label']} {_fmt(s.metric, v)} {item['unit']} "
+                               message=f"{item['label']} {_fmt(s.metric, v)} {item['unit']} " +
                                        ("has reached the critical limit" if item['status'] == 'critical' else "is outside the safe range"),
                                value=v, eta_min=None))
 

@@ -61,6 +61,16 @@ limits = Table("limits", meta,
     Column("source", Text),
 )
 
+chats = Table("chats", meta,
+    Column("id", Integer, primary_key=True),
+    Column("crew_id", Integer, ForeignKey("crew.id", ondelete="CASCADE"), nullable=True),
+    Column("role", String(10), nullable=False),               # user | assistant
+    Column("text", Text, nullable=False),
+    Column("source", String(10), default=""),                 # gemini | offline
+    Column("ts", DateTime(timezone=True), nullable=False, default=now),
+)
+Index("ix_chats_crew_ts", chats.c.crew_id, chats.c.ts)
+
 settings = Table("settings", meta,
     Column("key", String(40), primary_key=True),
     Column("value", Text),

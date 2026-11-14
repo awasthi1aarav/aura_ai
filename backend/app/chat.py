@@ -12,47 +12,55 @@ import httpx
 log = logging.getLogger("uvicorn.error")
 
 from .analysis import compute
+from .metrics import DECIMALS
 
 MODELS = [m for m in [os.getenv("GEMINI_MODEL"), "gemini-flash-latest", "gemini-flash-lite-latest",
                        "gemini-3.5-flash", "gemini-2.5-flash"] if m]
 _working = {"model": None}
 DISCLAIMER = "AURA is a decision-support prototype, not a medical device."
 
-SYSTEM = f"""You are AURA, the onboard health assistant of a crewed spacecraft on a long-duration mission.
-Earth is minutes away by radio, so the crew relies on you first.
+SYSTEM = """You are AURA, the onboard health assistant of a crewed spacecraft on a long-duration mission.
+Earth is minutes away by radio, so the crew asks you first. You talk like a calm, experienced
+flight surgeon: precise, warm, never dramatic.
 
-You receive LIVE TELEMETRY below: each astronaut's vitals (with their personal pre-flight
-baseline), the cabin environment, and the alerts/predictions produced by AURA's analysis engine.
+Each message comes with LIVE TELEMETRY (vitals with personal baselines, cabin environment,
+and the alerts/forecasts from AURA's analysis engine). Use it as your source of truth.
 
-How to answer:
-- Ground every statement in the telemetry. Quote the actual numbers. Never invent readings.
-- Assess the person: what is abnormal, how serious it is, and the most likely causes
-  (consider cabin conditions too, e.g. high CO2 causes headaches and faster breathing).
-- Say what the trend predicts if nothing changes (use the prediction ETAs given).
-- Give clear, practical next steps for the crew, and say when to contact the flight surgeon
-  on Earth or treat it as an emergency.
-- Use phrases like "possible", "consistent with" - you assess, you do not give a final diagnosis.
-- Be calm, precise and brief: short paragraphs or a few bullet points, under 180 words.
-- If asked something unrelated to crew health or the spacecraft, briefly steer back.
-- End with one short line: "{DISCLAIMER}"
+Conversation rules:
+- Answer the question that was asked, nothing more. Do not recite every vital each time;
+  mention only the numbers that matter for this question.
+- Short acknowledgements or small talk ("ok", "thanks", "hi") get one short, natural sentence.
+- Follow the conversation: if they ask a follow-up, build on what you already said instead of repeating it.
+- When something is abnormal: say what it is, how serious, the likely causes (consider the cabin too,
+  e.g. high CO2 causes headache and faster breathing), what the forecast says if nothing changes,
+  and the next steps, including when to call the flight surgeon on Earth or treat it as an emergency.
+- You assess, you do not diagnose: use "possible", "consistent with".
+- Never invent readings. If data is missing, say so.
+- No timestamps, no "based on live telemetry" openers, no closing disclaimers (the app shows one).
+- Keep it brief: 1-3 short paragraphs or a few bullets, under 150 words unless asked for detail.
+- Off-topic questions: one friendly line steering back to crew health or the spacecraft.
 """
+
+
+def _n(metric, v):
+    return f"{v:.{DECIMALS.get(metric, 1)}f}" if isinstance(v, (int, float)) else v
 
 
 def _fmt_metric(m):
     if m["value"] is None:
         return f"  - {m['label']}: no data"
-    line = f"  - {m['label']}: {m['value']} {m['unit']} [{m['status']}, {m['trend']}]"
+    line = f"  - {m['label']}: {_n(m['metric'], m['value'])} {m['unit']} [{m['status']}, {m['trend']}]"
     if m.get("baseline") is not None:
-        line += f" (baseline {m['baseline']})"
+        line += f" (baseline {_n(m['metric'], m['baseline'])})"
     if m.get("prediction"):
         p = m["prediction"]
-        line += f" -> projected to reach {p['level']} ({p['bound']}) in ~{p['eta_min']} min"
+        line += f" -> projected to reach {p['level']} ({_n(m['metric'], p['bound'])}) in ~{p['eta_min']} min"
     return line
 
 
 def build_context(crew_id=None):
     d = compute()
-    out = [f"Telemetry time (UTC): {d['updated']}"]
+    out = []
     for c in d["crew"]:
         if crew_id and c["id"] != crew_id:
             continue
@@ -152,3 +160,23 @@ async def reply(message, history, crew_id=None):
             log.error("Gemini returned no text (%s)", model)
             break
     return offline_reply(message, d, rel, crew_id, "AI model unavailable right now"), "offline"
+
+
+async def warm_up():
+    """Find a working Gemini model at startup so the first crew question is fast."""
+    key = os.getenv("GEMINI_API_KEY")
+    if not key:
+        return
+    body = {"contents": [{"role": "user", "parts": [{"text": "Reply with OK."}]}],
+            "generationConfig": {"maxOutputTokens": 20}}
+    async with httpx.AsyncClient(timeout=30) as client:
+        for model in MODELS:
+            try:
+                r = await client.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                                      headers={"x-goog-api-key": key}, json=body)
+            except Exception:
+                continue
+            if r.status_code == 200:
+                _working["model"] = model
+                log.info("Assistant model ready: %s", model)
+                return

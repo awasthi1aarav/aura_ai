@@ -30,6 +30,7 @@ TOKEN_HOURS = 12
 async def lifespan(app):
     db.init_db()
     task = asyncio.create_task(simulator.run_forever())
+    asyncio.create_task(chat.warm_up())
     yield
     task.cancel()
 
@@ -85,9 +86,37 @@ class ChatIn(BaseModel):
     history: list[dict] = []
 
 
+def _history(crew_id, limit=50):
+    q = select(db.chats).order_by(db.chats.c.ts.desc(), db.chats.c.id.desc()).limit(limit)
+    q = q.where(db.chats.c.crew_id == crew_id) if crew_id else q.where(db.chats.c.crew_id.is_(None))
+    with db.engine.connect() as conn:
+        rows = list(conn.execute(q))
+    return [dict(id=r.id, role=r.role, text=r.text, source=r.source, ts=r.ts.isoformat()) for r in reversed(rows)]
+
+
+@app.get("/api/chat/history")
+def chat_history(crew_id: Optional[int] = None):
+    return _history(crew_id)
+
+
+@app.delete("/api/chat/history")
+def clear_history(crew_id: Optional[int] = None):
+    with db.engine.begin() as conn:
+        q = delete(db.chats)
+        q = q.where(db.chats.c.crew_id == crew_id) if crew_id else q.where(db.chats.c.crew_id.is_(None))
+        conn.execute(q)
+    return {"ok": True}
+
+
 @app.post("/api/chat")
 async def chat_endpoint(body: ChatIn):
-    text, source = await chat.reply(body.message, body.history, body.crew_id)
+    history = [{"role": h["role"], "text": h["text"]} for h in _history(body.crew_id, 8)]
+    text, source = await chat.reply(body.message, history, body.crew_id)
+    with db.engine.begin() as conn:
+        conn.execute(insert(db.chats), [
+            dict(crew_id=body.crew_id, role="user", text=body.message, source="", ts=db.now()),
+            dict(crew_id=body.crew_id, role="assistant", text=text, source=source, ts=db.now()),
+        ])
     return {"reply": text, "source": source}
 
 
