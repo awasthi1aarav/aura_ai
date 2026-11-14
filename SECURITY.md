@@ -19,7 +19,7 @@ built in. Known limits follow.
 ## Abuse protection
 - Assistant: 10 questions per minute per visitor and 400 per hour site-wide, which protects the AI quota.
 - Login: a 5-minute lockout after 5 failed attempts from one IP (20 per username).
-  Client IPs come only from the hosting proxy's own entry, so they can't be spoofed with headers.
+  Client IPs come from the CDN-set header (CF-Connecting-IP), not from forgeable X-Forwarded-For.
 - Sensor ingest: 240 readings per minute per sensor, at most 500 per batch. CSV imports are capped at 2 MB.
 
 ## Audit trail

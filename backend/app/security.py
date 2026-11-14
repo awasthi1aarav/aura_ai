@@ -92,9 +92,11 @@ limiter = RateLimiter()
 
 
 def client_ip(request) -> str:
-    # Render's proxy appends the real client address as the LAST entry; earlier entries
-    # can be forged by the client, so they are ignored.
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[-1].strip()
+    # On Render, traffic passes through Cloudflare, which overwrites CF-Connecting-IP with the
+    # real client address (clients cannot forge it). X-Forwarded-For's first entry CAN be forged,
+    # so it is not trusted.
+    for h in ("cf-connecting-ip", "true-client-ip"):
+        v = request.headers.get(h)
+        if v:
+            return v.strip()[:64]
     return request.client.host if request.client else "unknown"
