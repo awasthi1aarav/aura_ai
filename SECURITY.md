@@ -3,12 +3,20 @@
 AURA is a hackathon prototype that uses **fictional crew and simulated data**. The controls below are
 built in. Known limits follow.
 
+## Isolation between missions
+- Every mission is a separate tenant. All crew, sensor, limit, reading, chat and log queries are
+  scoped by mission, and every record ID in an admin request is checked against the mission, so
+  guessing another mission's IDs doesn't work.
+- A host's session token is bound to one mission and can't administer any other mission.
+
 ## Access control
-- **Admin panel:** individual accounts (admin or viewer role) with passwords of at least 10 characters,
-  hashed with PBKDF2-SHA256 (200,000 rounds, per-user salt). Sessions use HMAC-signed tokens that
-  expire after 12 hours. Admins can't delete themselves or the last admin.
-- **Dashboard and assistant:** *Public* mode (for the demo and judging) or *Private* mode (team accounts
-  only), switched under Admin → Team & access.
+- **Mission admin:** unlocked with the mission's own password (at least 8 characters).
+- **Platform team:** individual accounts with passwords of at least 10 characters.
+- All passwords are hashed with PBKDF2-SHA256 (200,000 rounds, per-user salt). Sessions use
+  HMAC-signed tokens that expire after 12 hours.
+- **Viewing:** anyone with a mission's join code can watch it and use its assistant. That's needed for
+  judging, and the demo data is fictional.
+- Hosting is limited to 3 new missions per IP per hour (300 in total). Idle missions are deleted after 7 days.
 - **Sensors:** each sensor has its own API key, compared in constant time and replaceable at any time.
   A disabled sensor's data is rejected.
 
@@ -18,7 +26,7 @@ built in. Known limits follow.
 
 ## Abuse protection
 - Assistant: 10 questions per minute per visitor and 400 per hour site-wide, which protects the AI quota.
-- Login: a 5-minute lockout after 5 failed attempts from one IP (20 per username).
+- Login (mission and team): a 5-minute lockout after 5 failed attempts from one IP.
   Client IPs come from the CDN-set header (CF-Connecting-IP), not from forgeable X-Forwarded-For.
 - Sensor ingest: 240 readings per minute per sensor, at most 500 per batch. CSV imports are capped at 2 MB.
 

@@ -7,7 +7,7 @@ Scenarios let you inject a medical or ship event for demos.
 import asyncio
 import logging
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
 
 from sqlalchemy import delete, insert, select
 
@@ -55,51 +55,60 @@ def _offset(scenario, minutes, metric, is_target, subject):
     return 0
 
 
+ACTIVE_MINUTES = 30   # missions nobody has opened for this long stop simulating (saves the free DB)
+
+
+def _tick_mission(conn, m, t):
+    scenario = m.scenario or "none"
+    target = str(m.scenario_crew or "")
+    started = m.scenario_started
+    if started is not None and started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    minutes = max(0.0, (t - started).total_seconds() / 60) if started else 0.0
+    crew_rows = {r.id: r for r in conn.execute(select(db.crew).where(db.crew.c.mission_id == m.id))}
+    rows = []
+    fresh = t - timedelta(seconds=60)
+    for s in conn.execute(select(db.sensors).where(db.sensors.c.mission_id == m.id,
+                                                   db.sensors.c.active.is_(True))):
+        last_dev = s.last_device_at
+        if last_dev is not None and last_dev.tzinfo is None:
+            last_dev = last_dev.replace(tzinfo=timezone.utc)
+        if last_dev and last_dev > fresh:
+            continue  # a real device is feeding this sensor
+        if s.subject == "crew":
+            c = crew_rows.get(s.crew_id)
+            base = getattr(c, f"base_{s.metric}", None) if c else None
+        else:
+            base = SHIP_NOMINAL.get(s.metric)
+        if base is None:
+            continue
+        is_target = s.subject == "crew" and str(s.crew_id) == target
+        goal = base + _offset(scenario, minutes, s.metric, is_target, s.subject)
+        prev = _state.get(s.id, base)
+        val = prev + 0.35 * (goal - prev) + random.gauss(0, SIM_NOISE.get(s.metric, 0.5))
+        if s.metric == "spo2":
+            val = min(val, 100)
+        val = max(val, 0)
+        _state[s.id] = val
+        rows.append(dict(sensor_id=s.id, value=round(val, DECIMALS.get(s.metric, 2)), ts=t, source="simulator"))
+    return rows
+
+
 def tick():
     t = db.now()
+    active_since = t - timedelta(minutes=ACTIVE_MINUTES)
     with db.engine.begin() as conn:
-        cfg = db.get_settings(conn)
-        if cfg.get("simulator") != "on":
-            return
-        scenario = cfg.get("scenario", "none")
-        target = cfg.get("scenario_crew") or ""
-        try:
-            started = datetime.fromisoformat(cfg.get("scenario_started"))
-            minutes = max(0.0, (t - started).total_seconds() / 60)
-        except (TypeError, ValueError):
-            minutes = 0.0
-        crew_rows = {r.id: r for r in conn.execute(select(db.crew))}
+        ms = list(conn.execute(select(db.missions).where(
+            db.missions.c.simulator.is_(True),
+            (db.missions.c.is_demo.is_(True)) | (db.missions.c.last_active >= active_since))))
         rows = []
-        fresh = t - timedelta(seconds=60)
-        for s in conn.execute(select(db.sensors).where(db.sensors.c.active.is_(True))):
-            last_dev = s.last_device_at
-            if last_dev is not None and last_dev.tzinfo is None:
-                last_dev = last_dev.replace(tzinfo=timezone.utc)
-            if last_dev and last_dev > fresh:
-                continue  # a real device is feeding this sensor
-            if s.subject == "crew":
-                c = crew_rows.get(s.crew_id)
-                if c is None:
-                    continue
-                base = getattr(c, f"base_{s.metric}", None)
-                if base is None:
-                    continue
-            else:
-                base = SHIP_NOMINAL.get(s.metric)
-                if base is None:
-                    continue
-            is_target = s.subject == "crew" and str(s.crew_id) == target
-            goal = base + _offset(scenario, minutes, s.metric, is_target, s.subject)
-            prev = _state.get(s.id, base)
-            val = prev + 0.35 * (goal - prev) + random.gauss(0, SIM_NOISE.get(s.metric, 0.5))
-            if s.metric == "spo2":
-                val = min(val, 100)
-            val = max(val, 0)
-            _state[s.id] = val
-            rows.append(dict(sensor_id=s.id, value=round(val, DECIMALS.get(s.metric, 2)),
-                             ts=t, source="simulator"))
+        for m in ms:
+            rows += _tick_mission(conn, m, t)
         if rows:
             conn.execute(insert(db.readings), rows)
+
+
+IDLE_DAYS = 7         # hosted missions untouched this long are deleted
 
 
 def prune():
@@ -107,6 +116,11 @@ def prune():
         conn.execute(delete(db.readings).where(
             db.readings.c.ts < db.now() - timedelta(hours=KEEP_HOURS),
             db.readings.c.source == "simulator"))
+        idle = conn.execute(select(db.missions.c.id).where(
+            db.missions.c.is_demo.is_(False),
+            db.missions.c.last_active < db.now() - timedelta(days=IDLE_DAYS))).all()
+        for (mid,) in idle:
+            db.delete_mission(conn, mid)
 
 
 async def run_forever():

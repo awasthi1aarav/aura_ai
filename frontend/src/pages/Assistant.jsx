@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { api, fmt } from '../api.js'
+import { api, fmt, mpath } from '../api.js'
 
 const SUGGEST = [
   'How is this crew member doing right now?',
@@ -32,7 +32,7 @@ export default function Assistant({ data, initialCrew }) {
   useEffect(() => {
     if (!crewId) return
     let alive = true
-    api(`/api/chat/history?crew_id=${crewId}`).then(h => alive && setMsgs(h)).catch(() => {})
+    api(mpath(`/chat/history?crew_id=${crewId}`)).then(h => alive && setMsgs(h)).catch(() => {})
     return () => { alive = false }
   }, [crewId])
 
@@ -47,7 +47,7 @@ export default function Assistant({ data, initialCrew }) {
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), 60000)
     try {
-      const r = await api('/api/chat', { method: 'POST', body: { message, crew_id: crewId }, signal: ctrl.signal })
+      const r = await api(mpath('/chat'), { method: 'POST', body: { message, crew_id: crewId }, signal: ctrl.signal })
       setMsgs(m => [...m, { role: 'assistant', text: r.reply, source: r.source }])
     } catch (e) {
       const text = e.name === 'AbortError' ? "I couldn't get an answer in time. Please ask again."
@@ -67,7 +67,7 @@ export default function Assistant({ data, initialCrew }) {
 
   async function clearChat() {
     if (!window.confirm('Clear this conversation?')) return
-    await api(`/api/chat/history?crew_id=${crewId}`, { method: 'DELETE' }).catch(() => {})
+    await api(mpath(`/chat/history?crew_id=${crewId}`), { method: 'DELETE' }).catch(() => {})
     setMsgs([])
   }
 

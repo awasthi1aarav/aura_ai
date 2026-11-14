@@ -253,3 +253,21 @@ input.cell { width: 84px; text-align: right; padding: 5px 8px; }
   .tabs { overflow-x: auto; max-width: 100%; }
   .panel { overflow-x: auto; }
 }
+
+/* ---------- missions ---------- */
+.mission-chip > span:last-child { font-family: var(--serif); font-weight: 600; font-size: 15px; }
+.code-sm { font-family: var(--mono); font-size: 11px; color: var(--gold-deep); border: 1px solid var(--line-strong); padding: 0 6px; border-radius: 2px; margin-left: 6px; letter-spacing: 0.08em; }
+.hostjoin { display: grid; grid-template-columns: 1.2fr 1fr; gap: 24px; max-width: 980px; margin: 30px auto; align-items: start; }
+.hostjoin .panel { display: flex; flex-direction: column; gap: 14px; }
+.codein { font-size: 20px; letter-spacing: 0.2em; text-transform: uppercase; }
+.login.wide { max-width: 560px; }
+.bigcode { font-size: 44px; letter-spacing: 0.3em; color: var(--gold-deep); text-align: center; padding: 18px 0; border: 1px solid var(--line); background: var(--ivory); }
+.share { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.share .code { font-size: 22px; letter-spacing: 0.2em; color: var(--gold-deep); }
+.danger-zone { border-color: var(--crit-soft); }
+.btn.danger { border-color: var(--crit); color: var(--crit); }
+.btn.danger:hover { background: var(--crit-soft); }
+.login a, .hostjoin a { color: var(--gold-deep); }
+td a { color: var(--gold-deep); text-decoration: none; }
+a.btn { text-decoration: none; text-align: center; display: inline-block; }
+@media (max-width: 760px) { .hostjoin { grid-template-columns: 1fr; } .bigcode { font-size: 30px; } }

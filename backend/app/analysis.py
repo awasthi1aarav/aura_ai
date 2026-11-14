@@ -19,7 +19,7 @@ TREND_MIN = 5         # minutes used for the trend line
 HORIZON_MIN = 60      # how far ahead we predict
 SEVERITY_ORDER = {"critical": 0, "warning": 1, "watch": 2}
 
-_cache = {"t": 0.0, "data": None}
+_cache: dict[int, tuple[float, dict]] = {}
 
 
 def _status(v, lim):
@@ -65,18 +65,22 @@ def _fmt(metric, v):
     return f"{v:.{d}f}"
 
 
-def compute():
-    if _cache["data"] is not None and time.time() - _cache["t"] < 2:
-        return _cache["data"]
+def compute(mission_id):
+    hit = _cache.get(mission_id)
+    if hit and time.time() - hit[0] < 2:
+        return hit[1]
     t_now = db.now()
     since = t_now - timedelta(minutes=WINDOW_MIN)
     with db.engine.connect() as conn:
-        lims = {r.metric: r for r in conn.execute(select(db.limits))}
-        crew_rows = list(conn.execute(select(db.crew).order_by(db.crew.c.id)))
-        sens = list(conn.execute(select(db.sensors).where(db.sensors.c.active.is_(True))))
+        m = conn.execute(select(db.missions).where(db.missions.c.id == mission_id)).first()
+        lims = {r.metric: r for r in conn.execute(select(db.limits).where(db.limits.c.mission_id == mission_id))}
+        crew_rows = list(conn.execute(select(db.crew).where(db.crew.c.mission_id == mission_id).order_by(db.crew.c.id)))
+        sens = list(conn.execute(select(db.sensors).where(db.sensors.c.mission_id == mission_id,
+                                                          db.sensors.c.active.is_(True))))
         series = {s.id: [] for s in sens}
         q = (select(db.readings.c.sensor_id, db.readings.c.value, db.readings.c.ts)
-             .where(db.readings.c.ts >= since).order_by(db.readings.c.ts))
+             .where(db.readings.c.ts >= since, db.readings.c.sensor_id.in_(list(series) or [-1]))
+             .order_by(db.readings.c.ts))
         for r in conn.execute(q):
             if r.sensor_id in series:
                 series[r.sensor_id].append(r)
@@ -89,7 +93,6 @@ def compute():
                                  .order_by(db.readings.c.ts.desc()).limit(1)).first()
                 if r:
                     latest_any[sid] = r
-        cfg = db.get_settings(conn)
 
     alerts = []
     by_subject = {}
@@ -192,14 +195,19 @@ def compute():
                   "warning" if any(i["status"] == "warning" for i in ship_items) else "ok"
     alerts.sort(key=lambda a: (SEVERITY_ORDER[a["severity"]], a["eta_min"] if a["eta_min"] is not None else 999))
 
+    ms = m.mission_start
     data = dict(updated=t_now.isoformat(), crew=crew_out,
                 ship=dict(status=ship_status, metrics=ship_items), alerts=alerts,
-                simulator=dict(enabled=cfg.get("simulator") == "on", scenario=cfg.get("scenario", "none"),
-                               scenario_crew=cfg.get("scenario_crew") or None),
-                mission_start=cfg.get("mission_start"))
-    _cache.update(t=time.time(), data=data)
+                simulator=dict(enabled=bool(m.simulator), scenario=m.scenario or "none",
+                               scenario_crew=m.scenario_crew),
+                mission=dict(code=m.code, name=m.name, is_demo=bool(m.is_demo)),
+                mission_start=(ms.replace(tzinfo=timezone.utc) if ms and ms.tzinfo is None else ms).isoformat() if ms else None)
+    _cache[mission_id] = (time.time(), data)
     return data
 
 
-def invalidate():
-    _cache["data"] = None
+def invalidate(mission_id=None):
+    if mission_id is None:
+        _cache.clear()
+    else:
+        _cache.pop(mission_id, None)

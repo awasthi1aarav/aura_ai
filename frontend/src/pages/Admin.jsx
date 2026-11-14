@@ -1,11 +1,10 @@
 import React, { useEffect, useState } from 'react'
-import { api, getToken, getUser, setSession } from '../api.js'
+import { api, getMission, isHost, mpath, setToken } from '../api.js'
 
-const TABS = ['Crew', 'Sensors', 'Limits', 'Readings', 'Simulator', 'Connect a sensor', 'Team & access', 'Activity']
+const TABS = ['Crew', 'Sensors', 'Limits', 'Readings', 'Simulator', 'Connect a sensor', 'Mission', 'Activity']
 const CREW_METRICS = ['heart_rate', 'spo2', 'bp_sys', 'bp_dia', 'resp_rate', 'body_temp']
 
-export function Login({ onIn, title = 'Mission control access', note = 'Sign in with your team account.' }) {
-  const [user, setUser] = useState('')
+function HostLogin({ onIn, mission }) {
   const [pw, setPw] = useState('')
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
@@ -13,19 +12,20 @@ export function Login({ onIn, title = 'Mission control access', note = 'Sign in 
     e.preventDefault()
     setErr(''); setBusy(true)
     try {
-      const r = await api('/api/admin/login', { method: 'POST', body: { username: user.trim() || 'admin', password: pw } })
-      setSession(r)
-      onIn(r)
+      const r = await api(`/api/missions/${getMission()}/login`, { method: 'POST', body: { password: pw } })
+      setToken(getMission(), r.token)
+      onIn()
     } catch (e) { setErr(e.message) } finally { setBusy(false) }
   }
   return (
     <form className="panel login" onSubmit={go}>
-      <h2>{title}</h2>
-      <p className="sub">{note}</p>
-      <label>Username<input value={user} onChange={e => setUser(e.target.value)} autoComplete="username" autoFocus /></label>
-      <label>Password<input type="password" value={pw} onChange={e => setPw(e.target.value)} autoComplete="current-password" /></label>
+      <h2>Mission admin</h2>
+      <p className="sub">Enter the password for <strong>{mission?.name || getMission()}</strong>. Only this mission is affected by changes made here.</p>
+      <input type="text" name="username" autoComplete="username" value={getMission()} readOnly hidden />
+      <label>Mission password<input type="password" value={pw} onChange={e => setPw(e.target.value)} autoComplete="current-password" autoFocus /></label>
       {err && <div className="err">{err}</div>}
-      <button className="btn gold" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
+      <button className="btn gold" type="submit" disabled={busy}>{busy ? 'Checking…' : 'Unlock admin'}</button>
+      <p className="sub small">Want your own sandbox? <a href="#/host">Host a mission</a>. Team member? <a href="#/team">Team sign-in</a>.</p>
     </form>
   )
 }
@@ -39,7 +39,7 @@ function useLoad(path, deps = []) {
 }
 
 function Crew({ meta }) {
-  const [rows, load] = useLoad('/api/admin/crew')
+  const [rows, load] = useLoad(mpath('/admin/crew'))
   const blank = { name: '', role: '', notes: '', baseline: {} }
   const [edit, setEdit] = useState(null)
   const [msg, setMsg] = useState('')
@@ -47,14 +47,14 @@ function Crew({ meta }) {
     e.preventDefault()
     const body = { ...edit, baseline: Object.fromEntries(Object.entries(edit.baseline).filter(([, v]) => v !== '' && v !== null).map(([k, v]) => [k, Number(v)])) }
     try {
-      if (edit.id) await api(`/api/admin/crew/${edit.id}`, { method: 'PUT', body })
-      else await api('/api/admin/crew', { method: 'POST', body })
+      if (edit.id) await api(mpath(`/admin/crew/${edit.id}`), { method: 'PUT', body })
+      else await api(mpath('/admin/crew'), { method: 'POST', body })
       setEdit(null); setMsg('Saved.'); load()
     } catch (e) { setMsg(e.message) }
   }
   async function remove(c) {
     if (!window.confirm(`Remove ${c.name} and all their sensors and readings?`)) return
-    await api(`/api/admin/crew/${c.id}`, { method: 'DELETE' }); load()
+    await api(mpath(`/admin/crew/${c.id}`), { method: 'DELETE' }); load()
   }
   return (
     <div>
@@ -105,25 +105,25 @@ function Crew({ meta }) {
 }
 
 function Sensors({ meta }) {
-  const [rows, load] = useLoad('/api/admin/sensors')
-  const [crew] = useLoad('/api/admin/crew')
+  const [rows, load] = useLoad(mpath('/admin/sensors'))
+  const [crew] = useLoad(mpath('/admin/crew'))
   const [add, setAdd] = useState(null)
   const [shown, setShown] = useState({})
   async function toggle(s) {
-    await api(`/api/admin/sensors/${s.id}`, { method: 'PUT', body: { name: s.name, metric: s.metric, active: !s.active } }); load()
+    await api(mpath(`/admin/sensors/${s.id}`), { method: 'PUT', body: { name: s.name, metric: s.metric, active: !s.active } }); load()
   }
   async function rotate(s) {
     if (!window.confirm('Issue a new API key? The old key stops working immediately.')) return
-    await api(`/api/admin/sensors/${s.id}/rotate-key`, { method: 'POST' }); load()
+    await api(mpath(`/admin/sensors/${s.id}/rotate-key`), { method: 'POST' }); load()
   }
   async function remove(s) {
     if (!window.confirm(`Delete sensor "${s.name}" and its readings?`)) return
-    await api(`/api/admin/sensors/${s.id}`, { method: 'DELETE' }); load()
+    await api(mpath(`/admin/sensors/${s.id}`), { method: 'DELETE' }); load()
   }
   async function create(e) {
     e.preventDefault()
     try {
-      await api('/api/admin/sensors', { method: 'POST', body: { ...add, crew_id: add.crew_id ? Number(add.crew_id) : null } })
+      await api(mpath('/admin/sensors'), { method: 'POST', body: { ...add, crew_id: add.crew_id ? Number(add.crew_id) : null } })
       setAdd(null); load()
     } catch (er) { window.alert(er.message) }
   }
@@ -185,7 +185,7 @@ function Sensors({ meta }) {
 }
 
 function Limits() {
-  const [rows, load] = useLoad('/api/admin/limits')
+  const [rows, load] = useLoad(mpath('/admin/limits'))
   const [draft, setDraft] = useState({})
   const [msg, setMsg] = useState('')
   const val = (r, k) => draft[r.metric]?.[k] ?? (r[k] ?? '')
@@ -195,7 +195,7 @@ function Limits() {
     for (const k of ['warn_low', 'warn_high', 'crit_low', 'crit_high']) {
       const v = val(r, k); body[k] = v === '' || v === null ? null : Number(v)
     }
-    await api(`/api/admin/limits/${r.metric}`, { method: 'PUT', body })
+    await api(mpath(`/admin/limits/${r.metric}`), { method: 'PUT', body })
     setMsg(`${r.label} limits saved.`); load()
   }
   return (
@@ -222,15 +222,15 @@ function Limits() {
 }
 
 function Readings() {
-  const [sensors] = useLoad('/api/admin/sensors')
+  const [sensors] = useLoad(mpath('/admin/sensors'))
   const [filter, setFilter] = useState('')
-  const [rows, load] = useLoad(`/api/admin/readings?limit=60${filter ? `&sensor_id=${filter}` : ''}`, [filter])
+  const [rows, load] = useLoad(mpath(`/admin/readings?limit=60${filter ? `&sensor_id=${filter}` : ''}`), [filter])
   const [form, setForm] = useState({ sensor_id: '', value: '' })
   const [msg, setMsg] = useState('')
   async function add(e) {
     e.preventDefault()
     try {
-      await api('/api/admin/readings', { method: 'POST', body: { sensor_id: Number(form.sensor_id), value: Number(form.value) } })
+      await api(mpath('/admin/readings'), { method: 'POST', body: { sensor_id: Number(form.sensor_id), value: Number(form.value) } })
       setMsg('Reading added.'); setForm({ ...form, value: '' }); load()
     } catch (er) { setMsg(er.message) }
   }
@@ -239,13 +239,13 @@ function Readings() {
     if (!f) return
     const fd = new FormData(); fd.append('file', f)
     try {
-      const r = await api('/api/admin/readings/csv', { method: 'POST', form: fd })
+      const r = await api(mpath('/admin/readings/csv'), { method: 'POST', form: fd })
       setMsg(`Imported ${r.imported} readings${r.errors.length ? ` · ${r.errors.length} rows skipped (${r.errors[0]})` : ''}.`); load()
     } catch (er) { setMsg(er.message) }
     e.target.value = ''
   }
   async function remove(r) {
-    await api(`/api/admin/readings/${r.id}`, { method: 'DELETE' }); load()
+    await api(mpath(`/admin/readings/${r.id}`), { method: 'DELETE' }); load()
   }
   return (
     <div>
@@ -296,11 +296,11 @@ function Readings() {
 }
 
 function Simulator({ meta }) {
-  const [crew] = useLoad('/api/admin/crew')
+  const [crew] = useLoad(mpath('/admin/crew'))
   const [state, setState] = useState(null)
   const [msg, setMsg] = useState('')
   useEffect(() => {
-    api('/api/overview').then(d => setState({
+    api(mpath('/overview')).then(d => setState({
       enabled: d.simulator.enabled, scenario: d.simulator.scenario,
       scenario_crew: d.simulator.scenario_crew ? Number(d.simulator.scenario_crew) : '',
     }))
@@ -309,7 +309,7 @@ function Simulator({ meta }) {
     const s = { ...state, ...next }
     if (meta?.crew_scenarios.includes(s.scenario) && !s.scenario_crew) s.scenario_crew = crew?.[0]?.id
     setState(s)
-    await api('/api/admin/simulator', { method: 'POST', body: { ...s, scenario_crew: s.scenario_crew || null } })
+    await api(mpath('/admin/simulator'), { method: 'POST', body: { ...s, scenario_crew: s.scenario_crew || null } })
     setMsg(s.scenario === 'none' ? 'Normal operations.' : `Scenario started: ${meta.scenarios[s.scenario]}. Values change over the next few minutes.`)
   }
   if (!state || !meta) return null
@@ -365,84 +365,66 @@ http.POST("{\\"sensor_id\\":5,\\"value\\":" + String(spo2) + "}");`}</pre>
   )
 }
 
-function Team() {
-  const [rows, load] = useLoad('/api/admin/users')
-  const [access, setAccess] = useState(null)
-  const [form, setForm] = useState({ username: '', password: '', role: 'admin' })
+function MissionTab() {
+  const [info, setInfo] = useState(null)
+  const [name, setName] = useState('')
+  const [pw, setPw] = useState('')
   const [msg, setMsg] = useState('')
-  const me = getUser()
-  useEffect(() => { api('/api/admin/access').then(setAccess).catch(() => {}) }, [])
-  async function add(e) {
+  useEffect(() => { api(mpath('/meta')).then(d => { setInfo(d.mission); setName(d.mission.name) }).catch(() => {}) }, [])
+  const link = `${window.location.origin}/#/m/${getMission()}`
+  async function save(e) {
     e.preventDefault()
-    try { await api('/api/admin/users', { method: 'POST', body: form }); setForm({ username: '', password: '', role: 'admin' }); setMsg('Account created.'); load() }
-    catch (er) { setMsg(er.message) }
+    try {
+      await api(mpath('/admin/mission'), { method: 'PUT', body: { name: name || null, password: pw || null } })
+      setPw(''); setMsg('Saved.')
+    } catch (er) { setMsg(er.message) }
   }
-  async function reset(u) {
-    const pw = window.prompt(`New password for ${u.username} (at least 10 characters):`)
-    if (!pw) return
-    try { await api(`/api/admin/users/${u.id}/password`, { method: 'PUT', body: { password: pw } }); setMsg(`Password changed for ${u.username}.`) }
-    catch (er) { setMsg(er.message) }
+  async function end() {
+    if (!window.confirm('End this mission? Its crew, sensors, readings and chats are deleted for everyone. This cannot be undone.')) return
+    try {
+      await api(mpath('/admin/mission'), { method: 'DELETE' })
+      setToken(getMission(), null)
+      window.location.hash = '#/m/DEMO'
+    } catch (er) { setMsg(er.message) }
   }
-  async function remove(u) {
-    if (!window.confirm(`Delete the account "${u.username}"?`)) return
-    try { await api(`/api/admin/users/${u.id}`, { method: 'DELETE' }); load() } catch (er) { setMsg(er.message) }
-  }
-  async function toggle(pub) {
-    await api('/api/admin/access', { method: 'POST', body: { public: pub } }); setAccess({ public: pub })
-  }
+  if (!info) return null
   return (
     <div>
       <div className="editor">
-        <div className="k">Who can view the dashboard and assistant</div>
-        {access && (
-          <div className="scen">
-            <button className={access.public ? 'on' : ''} onClick={() => toggle(true)}>Public — anyone with the link (demo / judging)</button>
-            <button className={!access.public ? 'on' : ''} onClick={() => toggle(false)}>Private — team accounts only (real mission)</button>
-          </div>
-        )}
-        <p className="sub small">The admin panel always requires an admin account. Sensors always need their own API key.</p>
+        <div className="k">Share this mission</div>
+        <p className="sub">Anyone with the code or link can watch the dashboard and use the assistant. Changing anything needs the mission password.</p>
+        <div className="share">
+          <span className="code mono">{info.code}</span>
+          <span className="mono small muted">{link}</span>
+          <button className="btn" onClick={() => navigator.clipboard?.writeText(link).then(() => setMsg('Link copied.'))}>Copy link</button>
+        </div>
       </div>
       {msg && <div className="note">{msg}</div>}
-      <form className="editor" onSubmit={add}>
-        <div className="k">Add account</div>
+      <form className="editor" onSubmit={save}>
+        <div className="k">Settings</div>
         <div className="grid3">
-          <label>Username<input required minLength={3} maxLength={40} pattern="[A-Za-z0-9_.\-]+" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} /></label>
-          <label>Password (min 10)<input required type="password" minLength={10} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} autoComplete="new-password" /></label>
-          <label>Role
-            <select value={form.role} onChange={e => setForm({ ...form, role: e.target.value })}>
-              <option value="admin">Admin — can change everything</option>
-              <option value="viewer">Viewer — dashboard and assistant only</option>
-            </select>
-          </label>
+          <label>Mission name<input value={name} minLength={2} maxLength={60} onChange={e => setName(e.target.value)} /></label>
+          <label>New password (optional, min 8)<input type="password" minLength={8} value={pw} onChange={e => setPw(e.target.value)} autoComplete="new-password" /></label>
+          <label>&nbsp;<button className="btn gold">Save</button></label>
         </div>
-        <button className="btn gold">Create account</button>
       </form>
-      <table>
-        <thead><tr><th>Username</th><th>Role</th><th>Created</th><th /></tr></thead>
-        <tbody>
-          {rows?.map(u => (
-            <tr key={u.id}>
-              <td>{u.username}{u.username === me?.username && <span className="u"> (you)</span>}</td>
-              <td className="muted">{u.role}</td>
-              <td className="muted small">{u.created_at ? new Date(u.created_at).toLocaleString() : '—'}</td>
-              <td className="act">
-                <button className="link" onClick={() => reset(u)}>Reset password</button>
-                {u.username !== me?.username && <button className="link danger" onClick={() => remove(u)}>Delete</button>}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {!info.is_demo && (
+        <div className="editor danger-zone">
+          <div className="k">End mission</div>
+          <p className="sub">Hosted missions are also removed automatically after 7 days without visitors.</p>
+          <button className="btn danger" onClick={end}>End mission and delete its data</button>
+        </div>
+      )}
     </div>
   )
 }
 
 function Activity() {
-  const [rows, load] = useLoad('/api/admin/audit')
+  const [rows, load] = useLoad(mpath('/admin/audit'))
   return (
     <div>
       <div className="row-head">
-        <p className="sub">Every sign-in, failed sign-in and change made in the admin panel, with who did it and from where.</p>
+        <p className="sub">Every sign-in, failed sign-in and change made in this mission's admin, with when and from where.</p>
         <button className="btn" onClick={load}>Refresh</button>
       </div>
       <table>
@@ -462,34 +444,25 @@ function Activity() {
   )
 }
 
-export default function Admin() {
-  const [user, setUser] = useState(getToken() ? getUser() : null)
+export default function Admin({ mission }) {
+  const [authed, setAuthed] = useState(isHost())
   const [tab, setTab] = useState(TABS[0])
   const [meta, setMeta] = useState(null)
-  useEffect(() => { if (user) api('/api/meta').then(setMeta).catch(() => {}) }, [user])
+  useEffect(() => { if (authed) api(mpath('/meta')).then(setMeta).catch(() => {}) }, [authed])
   useEffect(() => {
-    const out = () => { if (!getToken()) setUser(null) }
+    const out = () => setAuthed(isHost())
     window.addEventListener('aura-auth', out)
     return () => window.removeEventListener('aura-auth', out)
   }, [])
-  const signOut = () => { setSession(null); setUser(null); window.dispatchEvent(new Event('aura-auth')) }
-  if (!user) return <Login onIn={r => setUser({ username: r.username, role: r.role })} />
-  if (user.role !== 'admin') {
-    return (
-      <div className="panel login">
-        <h2>Admins only</h2>
-        <p className="sub">You're signed in as <strong>{user.username}</strong> (viewer). Ask an admin for access.</p>
-        <button className="btn" onClick={signOut}>Sign out</button>
-      </div>
-    )
-  }
+  const signOut = () => { setToken(getMission(), null); setAuthed(isHost()) }
+  if (!authed) return <HostLogin mission={mission} onIn={() => setAuthed(true)} />
   return (
     <div className="admin">
       <div className="admin-head">
         <div className="tabs">
           {TABS.map(t => <button key={t} className={tab === t ? 'on' : ''} onClick={() => setTab(t)}>{t}</button>)}
         </div>
-        <span className="sub">{user.username} · <button className="link" onClick={signOut}>Sign out</button></span>
+        <span className="sub">{mission?.name} · <button className="link" onClick={signOut}>Lock</button></span>
       </div>
       <div className="panel">
         {tab === 'Crew' && <Crew meta={meta} />}
@@ -498,7 +471,7 @@ export default function Admin() {
         {tab === 'Readings' && <Readings />}
         {tab === 'Simulator' && <Simulator meta={meta} />}
         {tab === 'Connect a sensor' && <Connect />}
-        {tab === 'Team & access' && <Team />}
+        {tab === 'Mission' && <MissionTab />}
         {tab === 'Activity' && <Activity />}
       </div>
     </div>

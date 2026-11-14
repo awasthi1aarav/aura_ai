@@ -10,6 +10,15 @@ emergencies, and lets the crew ask an AI assistant what is happening and what to
 
 > Prototype for decision support. Not a medical device. The demo crew is fictional and live readings are simulated.
 
+## Missions (like game servers)
+
+Anyone can **host a mission**: give it a name and a password, and AURA creates a private copy
+with its own crew, sensors, limits, simulator scenarios, assistant chats and activity log. Share the
+6-character **join code** or the link `…/#/m/CODE`. Anyone with it can watch the dashboard and use
+the assistant; changing anything needs the mission password. Changes in one mission never affect
+another. A shared **Demo mission** (`DEMO`) is the default page. Missions with no visitors for 7 days
+are removed automatically.
+
 ## The four parts
 
 | Part | What it does |
@@ -17,7 +26,7 @@ emergencies, and lets the crew ask an AI assistant what is happening and what to
 | **1. Dashboard** | One screen with each astronaut's heart rate, SpO₂, blood pressure, respiration and temperature, plus the habitat's CO₂, O₂, pressure, temperature, humidity and radiation. Refreshes every 4 s. |
 | **2. Analysis and prediction** | Three explainable checks on every sensor: **limits** (NASA-STD-3001 for the cabin, clinical early-warning bands for vitals), **personal baseline** (unusual *for this astronaut*), and a **trend forecast** (linear fit over 5 min, projected 60 min ahead, e.g. *"SpO₂ falling, critical in ~7 min"*). Each astronaut gets a risk level: Stable, Watch or Attention. |
 | **3. AURA Assistant** | A chatbot that reads the live telemetry, baselines, alerts and forecasts before every answer, then assesses the crew member and suggests next steps. It uses Google Gemini (free tier) and falls back to a rule-based offline mode when no AI is available. |
-| **4. Admin panel (CMS)** | Add or remove crew (and their baselines), sensors and API keys, alert limits, and manual readings; import CSV data (e.g. NASA OSDR); run demo scenarios; manage team accounts, public/private access and the activity log. |
+| **4. Admin panel (CMS)** | Per mission, unlocked with the mission password: add or remove crew (and their baselines), sensors and API keys, alert limits and readings; import CSV data (e.g. NASA OSDR); run demo scenarios; rename the mission, change its password or end it; view its activity log. A separate **Team** page (`#/team`) lets the AURA team oversee every mission. |
 
 ## How sensor data gets in
 
@@ -54,7 +63,7 @@ Each one develops over a few minutes, so the forecast flags it **before** it cro
 
 ```bash
 cd backend && pip install -r requirements.txt
-uvicorn app.main:app --reload            # http://localhost:8000  (login: admin / aura-admin)
+uvicorn app.main:app --reload            # http://localhost:8000  (Demo mission password and team login admin: aura-admin)
 
 # optional, frontend hot-reload during design work:
 cd frontend && npm install && npm run dev   # http://localhost:5173
@@ -62,7 +71,7 @@ npm run build                               # rebuild frontend/dist before commi
 ```
 
 Environment variables: `DATABASE_URL` (Postgres; SQLite if unset), `GEMINI_API_KEY`, `GEMINI_MODEL`,
-`ADMIN_PASSWORD` (first admin account), `SECRET_KEY`, `ALLOWED_ORIGINS` (optional).
+`ADMIN_PASSWORD` (Demo mission password and first team account), `SECRET_KEY`, `ALLOWED_ORIGINS` (optional).
 
 ## Project layout
 

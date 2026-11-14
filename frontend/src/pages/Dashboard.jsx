@@ -1,5 +1,5 @@
 import React from 'react'
-import { fmt } from '../api.js'
+import { fmt, getMission } from '../api.js'
 
 export function Spark({ values, status }) {
   if (!values || values.length < 2) return <svg className="spark" viewBox="0 0 100 24" />
@@ -53,7 +53,7 @@ function CrewCard({ c }) {
       <div className="metrics">
         {c.metrics.map(m => <Metric key={m.sensor_id} m={m} />)}
       </div>
-      <a className="ask" href={`#/assistant?crew=${c.id}`}>Ask AURA about {c.name.split(' ').slice(-1)[0]} →</a>
+      <a className="ask" href={`#/m/${getMission()}/assistant?crew=${c.id}`}>Ask AURA about {c.name.split(' ').slice(-1)[0]} →</a>
     </article>
   )
 }

@@ -35,8 +35,9 @@ def _b64(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).decode().rstrip("=")
 
 
-def make_token(username: str, role: str) -> str:
-    payload = _b64(json.dumps({"u": username, "r": role, "exp": int(time.time()) + TOKEN_HOURS * 3600}).encode())
+def make_token(username: str, role: str, mission_id=None) -> str:
+    payload = _b64(json.dumps({"u": username, "r": role, "m": mission_id,
+                               "exp": int(time.time()) + TOKEN_HOURS * 3600}).encode())
     sig = hmac.new(SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}.{sig}"
 
@@ -50,7 +51,7 @@ def read_token(token: str):
         data = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
         if data["exp"] < time.time():
             return None
-        return {"username": data["u"], "role": data["r"]}
+        return {"username": data["u"], "role": data["r"], "mission_id": data.get("m")}
     except Exception:
         return None
 

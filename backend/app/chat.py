@@ -58,8 +58,8 @@ def _fmt_metric(m):
     return line
 
 
-def build_context(crew_id=None):
-    d = compute()
+def build_context(mission_id, crew_id=None):
+    d = compute(mission_id)
     out = []
     for c in d["crew"]:
         if crew_id and c["id"] != crew_id:
@@ -107,8 +107,8 @@ def offline_reply(message, d, rel, crew_id, note="AI model not configured"):
     return "\n".join(lines)
 
 
-async def reply(message, history, crew_id=None):
-    context, d, rel = build_context(crew_id)
+async def reply(mission_id, message, history, crew_id=None):
+    context, d, rel = build_context(mission_id, crew_id)
     key = os.getenv("GEMINI_API_KEY")
     if not key:
         return offline_reply(message, d, rel, crew_id), "offline"
