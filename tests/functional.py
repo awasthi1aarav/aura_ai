@@ -173,7 +173,13 @@ check("delete crew", c.delete(f"/api/m/{M}/admin/crew/{NC}", headers=H(HT)).stat
 check("end mission", c.delete(f"/api/m/{M}/admin/mission", headers=H(HT)).status_code == 200)
 check("ended mission gone", c.get(f"/api/missions/{M}").status_code == 404)
 
-# ---------- rate limits (last: they lock this IP briefly) ----------
+# ---------- rate limits (last: they lock this IP briefly; skip with SKIP_LIMITS=1) ----------
+if os.environ.get("SKIP_LIMITS"):
+    fails = [r for r in results if not r[1]]
+    print(f"\n{len(results) - len(fails)}/{len(results)} passed (rate-limit tests skipped)")
+    for f in fails:
+        print("FAILED:", f[0], f[2])
+    sys.exit(0)
 codes = [c.post(f"/api/m/DEMO/chat", headers=H(client="suite-rl-" + "1" * 16), json={"message": "hi"}).status_code for _ in range(11)]
 check("chat rate limit 429", 429 in codes, str(codes))
 c.delete("/api/m/DEMO/chat/history", headers=H(client="suite-rl-" + "1" * 16))

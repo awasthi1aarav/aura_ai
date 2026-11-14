@@ -6,6 +6,7 @@ Three checks per sensor, all explainable:
   3. Trend       - linear fit over the last few minutes, projected forward to estimate
                    WHEN a limit will be crossed (the prediction)
 """
+import threading
 import time
 from datetime import timedelta, timezone
 
@@ -66,10 +67,31 @@ def _fmt(metric, v):
     return f"{v:.{d}f}"
 
 
+_locks: dict[int, threading.Lock] = {}
+_locks_guard = threading.Lock()
+FRESH_S = 2.5     # results younger than this are served as-is
+STALE_S = 15      # while one request recomputes, others may get a result up to this old
+
+
 def compute(mission_id):
+    """Cached per mission. Only one request computes at a time; the rest reuse the latest result."""
     hit = _cache.get(mission_id)
-    if hit and time.time() - hit[0] < 2:
+    if hit and time.time() - hit[0] < FRESH_S:
         return hit[1]
+    with _locks_guard:
+        lock = _locks.setdefault(mission_id, threading.Lock())
+    if not lock.acquire(blocking=hit is None or time.time() - hit[0] > STALE_S):
+        return hit[1]                     # someone else is refreshing: serve the slightly older result
+    try:
+        hit = _cache.get(mission_id)
+        if hit and time.time() - hit[0] < FRESH_S:
+            return hit[1]
+        return _compute(mission_id)
+    finally:
+        lock.release()
+
+
+def _compute(mission_id):
     t_now = db.now()
     since = t_now - timedelta(minutes=WINDOW_MIN)
     with db.engine.connect() as conn:

@@ -23,6 +23,7 @@ from typing import Optional
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -55,6 +56,7 @@ app = FastAPI(title="AURA AI", version="2.0", lifespan=lifespan,
               description="Astronaut health monitoring: hosted missions, sensor ingest, "
                           "analysis/prediction, assistant, admin.")
 
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 _origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
 if _origins:
     app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_methods=["GET", "POST", "PUT", "DELETE"],
@@ -81,6 +83,8 @@ async def security_and_audit(request: Request, call_next):
         h["Content-Security-Policy"] = CSP
     if path.startswith("/api/"):
         h["Cache-Control"] = "no-store"
+    elif path.startswith("/assets/"):
+        h["Cache-Control"] = "public, max-age=31536000, immutable"   # file names contain a content hash
     # audit trail: every successful change
     if request.method != "GET" and response.status_code < 400:
         who = read_token((request.headers.get("authorization") or "")[7:]) or {}
@@ -117,12 +121,29 @@ def current_user(authorization: Optional[str] = Header(None)):
     return None
 
 
+_mission_cache: dict[str, tuple[float, object]] = {}
+
+
 def mission(code: str):
-    with db.engine.connect() as conn:
-        m = db.get_mission(conn, code)
+    """Mission lookup, cached for a few seconds (missions change rarely; edits clear the cache)."""
+    key = (code or "").upper()
+    hit = _mission_cache.get(key)
+    if hit and time.time() - hit[0] < 5:
+        m = hit[1]
+    else:
+        with db.engine.connect() as conn:
+            m = db.get_mission(conn, key)
+        if m:
+            _mission_cache[key] = (time.time(), m)
+            if len(_mission_cache) > 2000:
+                _mission_cache.clear()
     if not m:
         raise HTTPException(404, "No mission with that code")
     return m
+
+
+def forget_mission(code):
+    _mission_cache.pop((code or "").upper(), None)
 
 
 def require_team(user=Depends(current_user)):
@@ -737,6 +758,7 @@ def set_sim(body: SimIn, m=Depends(require_host)):
         conn.execute(update(db.missions).where(db.missions.c.id == m.id).values(
             simulator=body.enabled, scenario=body.scenario, scenario_crew=body.scenario_crew,
             scenario_started=db.now()))
+    forget_mission(m.code)
     analysis.invalidate(m.id)
     return {"ok": True}
 
@@ -792,6 +814,7 @@ def edit_mission(body: MissionEdit, m=Depends(require_host)):
     if vals:
         with db.engine.begin() as conn:
             conn.execute(update(db.missions).where(db.missions.c.id == m.id).values(**vals))
+        forget_mission(m.code)
         analysis.invalidate(m.id)
     return {"ok": True}
 
@@ -802,6 +825,7 @@ def end_mission(m=Depends(require_host)):
         raise HTTPException(409, "The demo mission can't be deleted")
     with db.engine.begin() as conn:
         db.delete_mission(conn, m.id)
+    forget_mission(m.code)
     analysis.invalidate(m.id)
     return {"ok": True}
 
@@ -843,6 +867,7 @@ def team_delete_mission(m=Depends(mission)):
         raise HTTPException(409, "The demo mission can't be deleted")
     with db.engine.begin() as conn:
         db.delete_mission(conn, m.id)
+    forget_mission(m.code)
     analysis.invalidate(m.id)
     return {"ok": True}
 
