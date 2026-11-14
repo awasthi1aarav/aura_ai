@@ -14,7 +14,8 @@ from sqlalchemy import insert, select, update
 
 from . import db
 from . import knowledge
-from .metrics import ALL_METRICS, BASELINE_TOLERANCE, CHECKIN_METRICS, CREW_METRICS, DECIMALS, SHIP_METRICS
+from .metrics import (ALL_METRICS, BASELINE_TOLERANCE, CHECKIN_METRICS, CREW_METRICS, DECIMALS, SHIP_METRICS,
+                      SHIP_NOMINAL)
 
 WINDOW_MIN = 10       # history pulled per sensor
 TREND_MIN = 5         # minutes used for the trend line
@@ -181,9 +182,16 @@ def _compute(mission_id):
                       and abs(slope) * TREND_MIN > 0.04 * abs(span or 1))
         if meaningful:
             item["trend"] = "rising" if slope > 0 else "falling"
-        if meaningful and lim and not stale and item["status"] != "critical":
+        normal = None
+        if s.subject == "crew":
+            c0 = next((c for c in crew_rows if c.id == s.crew_id), None)
+            normal = getattr(c0, f"base_{s.metric}", None) if c0 else None
+        else:
+            normal = SHIP_NOMINAL.get(s.metric)
+        fitted_now = sum(x[1] for x in recent[-6:]) / min(6, len(recent)) if recent else v
+        recovering = normal is not None and (fitted_now - normal) * slope < 0   # heading back towards normal
+        if meaningful and lim and not stale and item["status"] != "critical" and not recovering:
             direction = 1 if slope > 0 else -1
-            fitted_now = sum(x[1] for x in recent[-6:]) / min(6, len(recent))
             crit = lim.crit_high if direction > 0 else lim.crit_low
             warn = lim.warn_high if direction > 0 else lim.warn_low
             eta_c = _eta(fitted_now, slope, crit, direction)
