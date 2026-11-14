@@ -77,7 +77,7 @@ Each one develops over a few minutes, so the forecast flags it **before** it cro
 
 ## Team and how AURA was built
 
-**Team Orbital Five** (3 members): **Aarav Awasthi** (team lead: product vision, design decisions,
+**Team Orbital Five** (3 members): the **team lead** (product vision, design decisions,
 direction of the build, infrastructure) and two **QA testers** who tested the app and reported issues.
 The AI coding assistant Claude wrote most of the code under the team lead's direction.
 
