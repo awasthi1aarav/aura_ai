@@ -34,21 +34,25 @@ def _status(v, lim):
     return "ok"
 
 
+MIN_TREND_POINTS = 30   # ~2.5 min of 5-s readings before any forecast is made
+
+
 def _fit(points):
-    """Least-squares line. points: [(minutes, value)]. Returns slope/min and r^2."""
+    """Least-squares line. points: [(minutes, value)]. Returns slope/min, r^2 and residual std."""
     n = len(points)
-    if n < 10:
-        return 0.0, 0.0
+    if n < MIN_TREND_POINTS:
+        return 0.0, 0.0, 0.0
     mx = sum(p[0] for p in points) / n
     my = sum(p[1] for p in points) / n
     sxx = sum((p[0] - mx) ** 2 for p in points)
     if sxx == 0:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
     sxy = sum((p[0] - mx) * (p[1] - my) for p in points)
     slope = sxy / sxx
     syy = sum((p[1] - my) ** 2 for p in points)
     r2 = (sxy * sxy) / (sxx * syy) if syy > 0 else 0.0
-    return slope, r2
+    resid = max(0.0, syy - slope * sxy) / max(1, n - 2)
+    return slope, r2, resid ** 0.5
 
 
 def _eta(v, slope, bound, direction):
@@ -165,10 +169,13 @@ def _compute(mission_id):
         tp = [((p.ts.replace(tzinfo=timezone.utc) if p.ts.tzinfo is None else p.ts) - t_now)
               .total_seconds() / 60 for p in pts]
         recent = [(m, p.value) for m, p in zip(tp, pts) if m >= -TREND_MIN]
-        slope, r2 = _fit(recent)
+        slope, r2, noise = _fit(recent)
         item["slope"] = round(slope, 4)
         span = (lim.warn_high or lim.crit_high or v * 1.2) - (lim.warn_low or lim.crit_low or v * 0.8) if lim else v
-        meaningful = r2 >= 0.5 and abs(slope) * TREND_MIN > 0.04 * abs(span or 1)
+        window = (recent[-1][0] - recent[0][0]) if recent else 0
+        # a real trend: strong fit, a change well above the measurement noise, and a sizeable share of the safe range
+        meaningful = (r2 >= 0.6 and abs(slope) * window > 3 * noise
+                      and abs(slope) * TREND_MIN > 0.04 * abs(span or 1))
         if meaningful:
             item["trend"] = "rising" if slope > 0 else "falling"
         if meaningful and lim and not stale and item["status"] != "critical":
@@ -219,9 +226,11 @@ def _compute(mission_id):
         last_ts = (last.ts.replace(tzinfo=timezone.utc) if last and last.ts.tzinfo is None else last.ts) if last else None
         fresh = last is not None and (t_now - last_ts) < timedelta(hours=36)
         items = []
+        recent_ck = [k for k in mine_ck if (t_now - (k.ts.replace(tzinfo=timezone.utc) if k.ts.tzinfo is None else k.ts))
+                     < timedelta(hours=36)]
         for metric in CHECKIN_METRICS:
             lim = lims.get(metric)
-            v = getattr(last, metric) if fresh else None
+            v = next((getattr(k, metric) for k in reversed(recent_ck) if getattr(k, metric) is not None), None)
             hist = [getattr(k, metric) for k in mine_ck[-7:] if getattr(k, metric) is not None]
             st = _status(v, lim) if v is not None else "nodata"
             items.append(dict(metric=metric, label=lim.label if lim else CHECKIN_METRICS[metric]["label"],
