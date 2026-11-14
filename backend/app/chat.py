@@ -13,8 +13,8 @@ log = logging.getLogger("uvicorn.error")
 
 from .analysis import compute
 
-MODELS = [m for m in [os.getenv("GEMINI_MODEL"), "gemini-flash-latest", "gemini-3.5-flash",
-                       "gemini-3-flash-preview", "gemini-2.5-flash"] if m]
+MODELS = [m for m in [os.getenv("GEMINI_MODEL"), "gemini-flash-latest", "gemini-flash-lite-latest",
+                       "gemini-3.5-flash", "gemini-2.5-flash"] if m]
 _working = {"model": None}
 DISCLAIMER = "AURA is a decision-support prototype, not a medical device."
 
@@ -110,17 +110,26 @@ async def reply(message, history, crew_id=None):
         if h.get("text"):
             contents.append({"role": role, "parts": [{"text": h["text"][:2000]}]})
     contents.append({"role": "user", "parts": [{"text": f"LIVE TELEMETRY\n{context}\n\nQUESTION: {message[:2000]}"}]})
-    body = {"system_instruction": {"parts": [{"text": SYSTEM}]}, "contents": contents,
-            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2048}}
+    base = {"system_instruction": {"parts": [{"text": SYSTEM}]}, "contents": contents}
+
+    def body_for(model, thinking=True):
+        gen = {"temperature": 0.3, "maxOutputTokens": 2048}
+        if thinking:  # keep "thinking" short so answers arrive in a few seconds
+            gen["thinkingConfig"] = ({"thinkingBudget": 0} if "2.5" in model
+                                     else {"thinkingLevel": "low"})
+        return {**base, "generationConfig": gen}
+
     models = ([_working["model"]] if _working["model"] else []) + [m for m in MODELS if m != _working["model"]]
     t0 = time.monotonic()
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with httpx.AsyncClient(timeout=30) as client:
         for model in models:
-            if time.monotonic() - t0 > 40:
+            if time.monotonic() - t0 > 50:
                 break
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             try:
-                r = await client.post(url, headers={"x-goog-api-key": key}, json=body)
+                r = await client.post(url, headers={"x-goog-api-key": key}, json=body_for(model))
+                if r.status_code == 400:  # model doesn't accept that thinking setting
+                    r = await client.post(url, headers={"x-goog-api-key": key}, json=body_for(model, False))
             except Exception as e:
                 log.error("Gemini request error (%s): %s", model, type(e).__name__)
                 continue
