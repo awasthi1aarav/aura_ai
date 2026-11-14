@@ -3,9 +3,12 @@
 Uses Google Gemini (free tier) when GEMINI_API_KEY is set; otherwise falls back to a
 rule-based offline responder so the system still works with no internet / no key.
 """
+import logging
 import os
 
 import httpx
+
+log = logging.getLogger("uvicorn.error")
 
 from .analysis import compute
 
@@ -60,7 +63,7 @@ def build_context(crew_id=None):
     return "\n".join(out), d, rel
 
 
-def offline_reply(message, d, rel, crew_id):
+def offline_reply(message, d, rel, crew_id, note="AI model not configured"):
     who = next((c for c in d["crew"] if c["id"] == crew_id), None)
     lines = []
     if who:
@@ -110,11 +113,14 @@ async def reply(message, history, crew_id=None):
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(url, params={"key": key}, json=body)
+        if r.status_code != 200:
+            log.error("Gemini HTTP %s: %s", r.status_code, r.text[:500])
         r.raise_for_status()
         cand = r.json()["candidates"][0]
         text = "".join(p.get("text", "") for p in cand["content"]["parts"]).strip()
         if text:
             return text, "gemini"
-    except Exception:
-        pass
-    return offline_reply(message, d, rel, crew_id), "offline"
+        log.error("Gemini returned no text: %s", str(cand)[:300])
+    except Exception as e:
+        log.error("Gemini call failed: %r", e)
+    return offline_reply(message, d, rel, crew_id, "AI model unavailable right now"), "offline"
