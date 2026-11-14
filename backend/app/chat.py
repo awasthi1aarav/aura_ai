@@ -92,7 +92,7 @@ def offline_reply(message, d, rel, crew_id, note="AI model not configured"):
             if h and h not in seen:
                 seen.add(h)
                 lines.append(h)
-    lines.append(f"(Offline mode — AI model not configured.) {DISCLAIMER}")
+    lines.append(f"(Offline mode — {note}.) {DISCLAIMER}")
     return "\n".join(lines)
 
 
