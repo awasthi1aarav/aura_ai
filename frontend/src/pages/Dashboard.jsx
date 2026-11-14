@@ -96,7 +96,7 @@ export default function Dashboard({ data, error }) {
       <section className="main-col">
         <div className="section-head">
           <h2>Crew</h2>
-          <span className="sub">{data.crew.length} on board · updated {new Date(data.updated).toLocaleTimeString()}</span>
+          <span className="sub">{data.crew.length} on board · simulated demo data · updated {new Date(data.updated).toLocaleTimeString()}</span>
         </div>
         <div className="crew-grid">
           {data.crew.map(c => <CrewCard key={c.id} c={c} />)}

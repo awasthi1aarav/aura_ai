@@ -77,10 +77,6 @@ export default function App() {
         {page === 'admin' && <Admin />}
       </main>
 
-      <footer className="foot">
-        <span>AURA · NASA Space Apps Challenge 2026 · Team Orbital Five</span>
-        <span>Prototype for decision support — not a medical device. Demo crew and live readings are simulated.</span>
-      </footer>
     </div>
   )
 }
