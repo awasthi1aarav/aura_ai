@@ -1,28 +1,31 @@
 import React, { useEffect, useState } from 'react'
-import { api, getToken, setToken } from '../api.js'
+import { api, getToken, getUser, setSession } from '../api.js'
 
-const TABS = ['Crew', 'Sensors', 'Limits', 'Readings', 'Simulator', 'Connect a sensor']
+const TABS = ['Crew', 'Sensors', 'Limits', 'Readings', 'Simulator', 'Connect a sensor', 'Team & access', 'Activity']
 const CREW_METRICS = ['heart_rate', 'spo2', 'bp_sys', 'bp_dia', 'resp_rate', 'body_temp']
 
-function Login({ onIn }) {
+export function Login({ onIn, title = 'Mission control access', note = 'Sign in with your team account.' }) {
+  const [user, setUser] = useState('')
   const [pw, setPw] = useState('')
   const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
   async function go(e) {
     e.preventDefault()
-    setErr('')
+    setErr(''); setBusy(true)
     try {
-      const r = await api('/api/admin/login', { method: 'POST', body: { password: pw } })
-      setToken(r.token)
-      onIn()
-    } catch (e) { setErr(e.message) }
+      const r = await api('/api/admin/login', { method: 'POST', body: { username: user.trim() || 'admin', password: pw } })
+      setSession(r)
+      onIn(r)
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
   }
   return (
     <form className="panel login" onSubmit={go}>
-      <h2>Mission control access</h2>
-      <p className="sub">The admin panel manages crew, sensors, limits and data.</p>
-      <label>Password<input type="password" value={pw} onChange={e => setPw(e.target.value)} autoFocus /></label>
+      <h2>{title}</h2>
+      <p className="sub">{note}</p>
+      <label>Username<input value={user} onChange={e => setUser(e.target.value)} autoComplete="username" autoFocus /></label>
+      <label>Password<input type="password" value={pw} onChange={e => setPw(e.target.value)} autoComplete="current-password" /></label>
       {err && <div className="err">{err}</div>}
-      <button className="btn gold" type="submit">Sign in</button>
+      <button className="btn gold" type="submit" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
     </form>
   )
 }
@@ -30,7 +33,7 @@ function Login({ onIn }) {
 function useLoad(path, deps = []) {
   const [rows, setRows] = useState(null)
   const [err, setErr] = useState('')
-  const load = () => api(path, { auth: true }).then(setRows).catch(e => setErr(e.message))
+  const load = () => api(path).then(setRows).catch(e => setErr(e.message))
   useEffect(() => { load() }, deps) // eslint-disable-line react-hooks/exhaustive-deps
   return [rows, load, err]
 }
@@ -44,14 +47,14 @@ function Crew({ meta }) {
     e.preventDefault()
     const body = { ...edit, baseline: Object.fromEntries(Object.entries(edit.baseline).filter(([, v]) => v !== '' && v !== null).map(([k, v]) => [k, Number(v)])) }
     try {
-      if (edit.id) await api(`/api/admin/crew/${edit.id}`, { method: 'PUT', body, auth: true })
-      else await api('/api/admin/crew', { method: 'POST', body, auth: true })
+      if (edit.id) await api(`/api/admin/crew/${edit.id}`, { method: 'PUT', body })
+      else await api('/api/admin/crew', { method: 'POST', body })
       setEdit(null); setMsg('Saved.'); load()
     } catch (e) { setMsg(e.message) }
   }
   async function remove(c) {
     if (!window.confirm(`Remove ${c.name} and all their sensors and readings?`)) return
-    await api(`/api/admin/crew/${c.id}`, { method: 'DELETE', auth: true }); load()
+    await api(`/api/admin/crew/${c.id}`, { method: 'DELETE' }); load()
   }
   return (
     <div>
@@ -107,20 +110,20 @@ function Sensors({ meta }) {
   const [add, setAdd] = useState(null)
   const [shown, setShown] = useState({})
   async function toggle(s) {
-    await api(`/api/admin/sensors/${s.id}`, { method: 'PUT', auth: true, body: { name: s.name, metric: s.metric, active: !s.active } }); load()
+    await api(`/api/admin/sensors/${s.id}`, { method: 'PUT', body: { name: s.name, metric: s.metric, active: !s.active } }); load()
   }
   async function rotate(s) {
     if (!window.confirm('Issue a new API key? The old key stops working immediately.')) return
-    await api(`/api/admin/sensors/${s.id}/rotate-key`, { method: 'POST', auth: true }); load()
+    await api(`/api/admin/sensors/${s.id}/rotate-key`, { method: 'POST' }); load()
   }
   async function remove(s) {
     if (!window.confirm(`Delete sensor "${s.name}" and its readings?`)) return
-    await api(`/api/admin/sensors/${s.id}`, { method: 'DELETE', auth: true }); load()
+    await api(`/api/admin/sensors/${s.id}`, { method: 'DELETE' }); load()
   }
   async function create(e) {
     e.preventDefault()
     try {
-      await api('/api/admin/sensors', { method: 'POST', auth: true, body: { ...add, crew_id: add.crew_id ? Number(add.crew_id) : null } })
+      await api('/api/admin/sensors', { method: 'POST', body: { ...add, crew_id: add.crew_id ? Number(add.crew_id) : null } })
       setAdd(null); load()
     } catch (er) { window.alert(er.message) }
   }
@@ -192,7 +195,7 @@ function Limits() {
     for (const k of ['warn_low', 'warn_high', 'crit_low', 'crit_high']) {
       const v = val(r, k); body[k] = v === '' || v === null ? null : Number(v)
     }
-    await api(`/api/admin/limits/${r.metric}`, { method: 'PUT', auth: true, body })
+    await api(`/api/admin/limits/${r.metric}`, { method: 'PUT', body })
     setMsg(`${r.label} limits saved.`); load()
   }
   return (
@@ -227,7 +230,7 @@ function Readings() {
   async function add(e) {
     e.preventDefault()
     try {
-      await api('/api/admin/readings', { method: 'POST', auth: true, body: { sensor_id: Number(form.sensor_id), value: Number(form.value) } })
+      await api('/api/admin/readings', { method: 'POST', body: { sensor_id: Number(form.sensor_id), value: Number(form.value) } })
       setMsg('Reading added.'); setForm({ ...form, value: '' }); load()
     } catch (er) { setMsg(er.message) }
   }
@@ -236,13 +239,13 @@ function Readings() {
     if (!f) return
     const fd = new FormData(); fd.append('file', f)
     try {
-      const r = await api('/api/admin/readings/csv', { method: 'POST', auth: true, form: fd })
+      const r = await api('/api/admin/readings/csv', { method: 'POST', form: fd })
       setMsg(`Imported ${r.imported} readings${r.errors.length ? ` · ${r.errors.length} rows skipped (${r.errors[0]})` : ''}.`); load()
     } catch (er) { setMsg(er.message) }
     e.target.value = ''
   }
   async function remove(r) {
-    await api(`/api/admin/readings/${r.id}`, { method: 'DELETE', auth: true }); load()
+    await api(`/api/admin/readings/${r.id}`, { method: 'DELETE' }); load()
   }
   return (
     <div>
@@ -306,7 +309,7 @@ function Simulator({ meta }) {
     const s = { ...state, ...next }
     if (meta?.crew_scenarios.includes(s.scenario) && !s.scenario_crew) s.scenario_crew = crew?.[0]?.id
     setState(s)
-    await api('/api/admin/simulator', { method: 'POST', auth: true, body: { ...s, scenario_crew: s.scenario_crew || null } })
+    await api('/api/admin/simulator', { method: 'POST', body: { ...s, scenario_crew: s.scenario_crew || null } })
     setMsg(s.scenario === 'none' ? 'Normal operations.' : `Scenario started: ${meta.scenarios[s.scenario]}. Values change over the next few minutes.`)
   }
   if (!state || !meta) return null
@@ -362,24 +365,131 @@ http.POST("{\\"sensor_id\\":5,\\"value\\":" + String(spo2) + "}");`}</pre>
   )
 }
 
+function Team() {
+  const [rows, load] = useLoad('/api/admin/users')
+  const [access, setAccess] = useState(null)
+  const [form, setForm] = useState({ username: '', password: '', role: 'admin' })
+  const [msg, setMsg] = useState('')
+  const me = getUser()
+  useEffect(() => { api('/api/admin/access').then(setAccess).catch(() => {}) }, [])
+  async function add(e) {
+    e.preventDefault()
+    try { await api('/api/admin/users', { method: 'POST', body: form }); setForm({ username: '', password: '', role: 'admin' }); setMsg('Account created.'); load() }
+    catch (er) { setMsg(er.message) }
+  }
+  async function reset(u) {
+    const pw = window.prompt(`New password for ${u.username} (at least 10 characters):`)
+    if (!pw) return
+    try { await api(`/api/admin/users/${u.id}/password`, { method: 'PUT', body: { password: pw } }); setMsg(`Password changed for ${u.username}.`) }
+    catch (er) { setMsg(er.message) }
+  }
+  async function remove(u) {
+    if (!window.confirm(`Delete the account "${u.username}"?`)) return
+    try { await api(`/api/admin/users/${u.id}`, { method: 'DELETE' }); load() } catch (er) { setMsg(er.message) }
+  }
+  async function toggle(pub) {
+    await api('/api/admin/access', { method: 'POST', body: { public: pub } }); setAccess({ public: pub })
+  }
+  return (
+    <div>
+      <div className="editor">
+        <div className="k">Who can view the dashboard and assistant</div>
+        {access && (
+          <div className="scen">
+            <button className={access.public ? 'on' : ''} onClick={() => toggle(true)}>Public — anyone with the link (demo / judging)</button>
+            <button className={!access.public ? 'on' : ''} onClick={() => toggle(false)}>Private — team accounts only (real mission)</button>
+          </div>
+        )}
+        <p className="sub small">The admin panel always requires an admin account. Sensors always need their own API key.</p>
+      </div>
+      {msg && <div className="note">{msg}</div>}
+      <form className="editor" onSubmit={add}>
+        <div className="k">Add account</div>
+        <div className="grid3">
+          <label>Username<input required minLength={3} maxLength={40} pattern="[A-Za-z0-9_.\-]+" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} /></label>
+          <label>Password (min 10)<input required type="password" minLength={10} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} autoComplete="new-password" /></label>
+          <label>Role
+            <select value={form.role} onChange={e => setForm({ ...form, role: e.target.value })}>
+              <option value="admin">Admin — can change everything</option>
+              <option value="viewer">Viewer — dashboard and assistant only</option>
+            </select>
+          </label>
+        </div>
+        <button className="btn gold">Create account</button>
+      </form>
+      <table>
+        <thead><tr><th>Username</th><th>Role</th><th>Created</th><th /></tr></thead>
+        <tbody>
+          {rows?.map(u => (
+            <tr key={u.id}>
+              <td>{u.username}{u.username === me?.username && <span className="u"> (you)</span>}</td>
+              <td className="muted">{u.role}</td>
+              <td className="muted small">{u.created_at ? new Date(u.created_at).toLocaleString() : '—'}</td>
+              <td className="act">
+                <button className="link" onClick={() => reset(u)}>Reset password</button>
+                {u.username !== me?.username && <button className="link danger" onClick={() => remove(u)}>Delete</button>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function Activity() {
+  const [rows, load] = useLoad('/api/admin/audit')
+  return (
+    <div>
+      <div className="row-head">
+        <p className="sub">Every sign-in, failed sign-in and change made in the admin panel, with who did it and from where.</p>
+        <button className="btn" onClick={load}>Refresh</button>
+      </div>
+      <table>
+        <thead><tr><th>Time</th><th>User</th><th>Action</th><th>IP address</th></tr></thead>
+        <tbody>
+          {rows?.map((r, i) => (
+            <tr key={i}>
+              <td className="mono small">{new Date(r.ts).toLocaleString()}</td>
+              <td>{r.username || '—'}</td>
+              <td className={r.action === 'login failed' ? 'txt-crit' : ''}>{r.action}</td>
+              <td className="mono small muted">{r.ip}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 export default function Admin() {
-  const [authed, setAuthed] = useState(!!getToken())
+  const [user, setUser] = useState(getToken() ? getUser() : null)
   const [tab, setTab] = useState(TABS[0])
   const [meta, setMeta] = useState(null)
-  useEffect(() => { api('/api/meta').then(setMeta).catch(() => {}) }, [])
+  useEffect(() => { if (user) api('/api/meta').then(setMeta).catch(() => {}) }, [user])
   useEffect(() => {
-    const out = () => setAuthed(false)
-    window.addEventListener('aura-logout', out)
-    return () => window.removeEventListener('aura-logout', out)
+    const out = () => { if (!getToken()) setUser(null) }
+    window.addEventListener('aura-auth', out)
+    return () => window.removeEventListener('aura-auth', out)
   }, [])
-  if (!authed) return <Login onIn={() => setAuthed(true)} />
+  const signOut = () => { setSession(null); setUser(null); window.dispatchEvent(new Event('aura-auth')) }
+  if (!user) return <Login onIn={r => setUser({ username: r.username, role: r.role })} />
+  if (user.role !== 'admin') {
+    return (
+      <div className="panel login">
+        <h2>Admins only</h2>
+        <p className="sub">You're signed in as <strong>{user.username}</strong> (viewer). Ask an admin for access.</p>
+        <button className="btn" onClick={signOut}>Sign out</button>
+      </div>
+    )
+  }
   return (
     <div className="admin">
       <div className="admin-head">
         <div className="tabs">
           {TABS.map(t => <button key={t} className={tab === t ? 'on' : ''} onClick={() => setTab(t)}>{t}</button>)}
         </div>
-        <button className="link" onClick={() => { setToken(null); setAuthed(false) }}>Sign out</button>
+        <span className="sub">{user.username} · <button className="link" onClick={signOut}>Sign out</button></span>
       </div>
       <div className="panel">
         {tab === 'Crew' && <Crew meta={meta} />}
@@ -388,6 +498,8 @@ export default function Admin() {
         {tab === 'Readings' && <Readings />}
         {tab === 'Simulator' && <Simulator meta={meta} />}
         {tab === 'Connect a sensor' && <Connect />}
+        {tab === 'Team & access' && <Team />}
+        {tab === 'Activity' && <Activity />}
       </div>
     </div>
   )

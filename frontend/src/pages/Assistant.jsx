@@ -47,16 +47,12 @@ export default function Assistant({ data, initialCrew }) {
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), 60000)
     try {
-      const res = await fetch('/api/chat', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctrl.signal,
-        body: JSON.stringify({ message, crew_id: crewId }),
-      })
-      if (!res.ok) throw new Error(res.statusText)
-      const r = await res.json()
+      const r = await api('/api/chat', { method: 'POST', body: { message, crew_id: crewId }, signal: ctrl.signal })
       setMsgs(m => [...m, { role: 'assistant', text: r.reply, source: r.source }])
     } catch (e) {
-      const why = e.name === 'AbortError' ? 'took too long' : e.message
-      setMsgs(m => [...m, { role: 'assistant', text: `I couldn't get an answer just now (${why}). Please ask again.`, failed: true }])
+      const text = e.name === 'AbortError' ? "I couldn't get an answer in time. Please ask again."
+        : e.status === 429 ? e.message : `I couldn't get an answer just now (${e.message}). Please ask again.`
+      setMsgs(m => [...m, { role: 'assistant', text, failed: true }])
     } finally {
       clearTimeout(timer)
       setBusy(false)

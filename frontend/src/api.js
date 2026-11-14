@@ -1,25 +1,48 @@
-const TOKEN_KEY = 'aura_admin_token'
+const TOKEN_KEY = 'aura_token'
+const USER_KEY = 'aura_user'
+const CLIENT_KEY = 'aura_client_id'
+let memClient = null
 
 export function getToken() {
   try { return sessionStorage.getItem(TOKEN_KEY) } catch { return null }
 }
-export function setToken(t) {
-  try { t ? sessionStorage.setItem(TOKEN_KEY, t) : sessionStorage.removeItem(TOKEN_KEY) } catch { /* ignore */ }
+export function getUser() {
+  try { return JSON.parse(sessionStorage.getItem(USER_KEY) || 'null') } catch { return null }
+}
+export function setSession(s) {
+  try {
+    if (s) { sessionStorage.setItem(TOKEN_KEY, s.token); sessionStorage.setItem(USER_KEY, JSON.stringify({ username: s.username, role: s.role })) }
+    else { sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(USER_KEY) }
+  } catch { /* storage unavailable */ }
 }
 
-export async function api(path, { method = 'GET', body, form, auth = false } = {}) {
-  const headers = {}
+// Anonymous per-browser id: keeps each visitor's assistant conversations private.
+export function clientId() {
+  try {
+    let id = localStorage.getItem(CLIENT_KEY)
+    if (!id) { id = crypto.randomUUID(); localStorage.setItem(CLIENT_KEY, id) }
+    return id
+  } catch {
+    memClient = memClient || (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now())
+    return memClient
+  }
+}
+
+export async function api(path, { method = 'GET', body, form, signal } = {}) {
+  const headers = { 'X-Client-Id': clientId() }
   if (body) headers['Content-Type'] = 'application/json'
-  if (auth) headers['Authorization'] = `Bearer ${getToken()}`
-  const res = await fetch(path, { method, headers, body: form || (body ? JSON.stringify(body) : undefined) })
-  if (res.status === 401 && auth) {
-    setToken(null)
-    window.dispatchEvent(new Event('aura-logout'))
+  const token = getToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const res = await fetch(path, { method, headers, signal, body: form || (body ? JSON.stringify(body) : undefined) })
+  if (res.status === 401 && token) {  // session expired or revoked
+    setSession(null)
+    window.dispatchEvent(new Event('aura-auth'))
   }
   if (!res.ok) {
     let msg = res.statusText
-    try { const j = await res.json(); msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail) } catch { /* ignore */ }
-    throw new Error(msg)
+    try { const j = await res.json(); msg = typeof j.detail === 'string' ? j.detail : 'Please check the form and try again.' } catch { /* ignore */ }
+    const err = new Error(msg); err.status = res.status
+    throw err
   }
   return res.json()
 }

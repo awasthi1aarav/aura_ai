@@ -64,12 +64,30 @@ limits = Table("limits", meta,
 chats = Table("chats", meta,
     Column("id", Integer, primary_key=True),
     Column("crew_id", Integer, ForeignKey("crew.id", ondelete="CASCADE"), nullable=True),
+    Column("client_id", String(64), nullable=True),           # private per-browser conversations
     Column("role", String(10), nullable=False),               # user | assistant
     Column("text", Text, nullable=False),
     Column("source", String(10), default=""),                 # gemini | offline
     Column("ts", DateTime(timezone=True), nullable=False, default=now),
 )
 Index("ix_chats_crew_ts", chats.c.crew_id, chats.c.ts)
+
+users = Table("users", meta,
+    Column("id", Integer, primary_key=True),
+    Column("username", String(40), nullable=False, unique=True),
+    Column("pw_hash", String(200), nullable=False),
+    Column("role", String(10), nullable=False, default="admin"),   # admin | viewer
+    Column("created_at", DateTime(timezone=True), default=now),
+)
+
+audit = Table("audit", meta,
+    Column("id", Integer, primary_key=True),
+    Column("ts", DateTime(timezone=True), nullable=False, default=now),
+    Column("username", String(40)),
+    Column("ip", String(64)),
+    Column("action", String(60), nullable=False),
+    Column("detail", Text, default=""),
+)
 
 settings = Table("settings", meta,
     Column("key", String(40), primary_key=True),
@@ -88,9 +106,24 @@ def sensors_for_crew(conn, crew_id, name):
             crew_id=crew_id, api_key=new_key(), active=True))
 
 
+def _migrate():
+    """Small in-place upgrades for databases created by older versions."""
+    from sqlalchemy import inspect, text
+    cols = {c["name"] for c in inspect(engine).get_columns("chats")}
+    if "client_id" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE chats ADD COLUMN client_id VARCHAR(64)"))
+
+
 def init_db():
     meta.create_all(engine)
+    _migrate()
     with engine.begin() as conn:
+        if conn.execute(select(users.c.id)).first() is None:
+            from .security import hash_password
+            conn.execute(insert(users).values(
+                username="admin", role="admin",
+                pw_hash=hash_password(os.getenv("ADMIN_PASSWORD", "aura-admin"))))
         if conn.execute(select(limits.c.metric)).first() is None:
             for m, spec in ALL_METRICS.items():
                 conn.execute(insert(limits).values(metric=m, **spec))
@@ -112,7 +145,7 @@ def init_db():
                     name=f"Habitat · {spec['label']}", metric=m, subject="ship",
                     crew_id=None, api_key=new_key(), active=True))
         for k, v in {"simulator": "on", "scenario": "none", "scenario_crew": "",
-                     "scenario_started": "", "mission_start": (now() - timedelta(days=142, hours=6)).isoformat()}.items():
+                     "scenario_started": "", "public_access": "on", "mission_start": (now() - timedelta(days=142, hours=6)).isoformat()}.items():
             if conn.execute(select(settings.c.key).where(settings.c.key == k)).first() is None:
                 conn.execute(insert(settings).values(key=k, value=v))
 

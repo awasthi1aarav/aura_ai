@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { api, sinceMission } from './api.js'
 import Dashboard from './pages/Dashboard.jsx'
 import Assistant from './pages/Assistant.jsx'
-import Admin from './pages/Admin.jsx'
+import Admin, { Login } from './pages/Admin.jsx'
 
 function useHash() {
   const [hash, setHash] = useState(window.location.hash || '#/')
@@ -17,16 +17,23 @@ function useHash() {
 function useOverview() {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
+  const [locked, setLocked] = useState(false)
+  const [nonce, setNonce] = useState(0)
+  useEffect(() => {
+    const again = () => setNonce(n => n + 1)
+    window.addEventListener('aura-auth', again)
+    return () => window.removeEventListener('aura-auth', again)
+  }, [])
   useEffect(() => {
     let alive = true
     const load = () => api('/api/overview')
-      .then(d => { if (alive) { setData(d); setError(null) } })
-      .catch(e => alive && setError(e.message))
+      .then(d => { if (alive) { setData(d); setError(null); setLocked(false) } })
+      .catch(e => { if (!alive) return; if (e.status === 401) { setLocked(true); setData(null) } else setError(e.message) })
     load()
     const id = setInterval(load, 4000)
     return () => { alive = false; clearInterval(id) }
-  }, [])
-  return { data, error }
+  }, [nonce])
+  return { data, error, locked, retry: () => setNonce(n => n + 1) }
 }
 
 function Clock({ start }) {
@@ -37,7 +44,7 @@ function Clock({ start }) {
 
 export default function App() {
   const hash = useHash()
-  const { data, error } = useOverview()
+  const { data, error, locked, retry } = useOverview()
   const [route, query] = hash.slice(1).split('?')
   const params = new URLSearchParams(query || '')
   const page = route.startsWith('/assistant') ? 'assistant' : route.startsWith('/admin') ? 'admin' : 'dashboard'
@@ -72,8 +79,11 @@ export default function App() {
       </header>
 
       <main>
-        {page === 'dashboard' && <Dashboard data={data} error={error} />}
-        {page === 'assistant' && <Assistant data={data} initialCrew={params.get('crew')} />}
+        {locked && page !== 'admin' && (
+          <Login title="Crew access" note="This mission's dashboard is private. Sign in with your team account." onIn={retry} />
+        )}
+        {!locked && page === 'dashboard' && <Dashboard data={data} error={error} />}
+        {!locked && page === 'assistant' && <Assistant data={data} initialCrew={params.get('crew')} />}
         {page === 'admin' && <Admin />}
       </main>
 

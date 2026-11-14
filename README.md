@@ -17,7 +17,7 @@ emergencies, and lets the crew ask an AI assistant what is happening and what to
 | **1. Dashboard** | One screen with each astronaut's heart rate, SpO₂, blood pressure, respiration and temperature, plus the habitat's CO₂, O₂, pressure, temperature, humidity and radiation. Refreshes every 4 s. |
 | **2. Analysis and prediction** | Three explainable checks on every sensor: **limits** (NASA-STD-3001 for the cabin, clinical early-warning bands for vitals), **personal baseline** (unusual *for this astronaut*), and a **trend forecast** (linear fit over 5 min, projected 60 min ahead, e.g. *"SpO₂ falling, critical in ~7 min"*). Each astronaut gets a risk level: Stable, Watch or Attention. |
 | **3. AURA Assistant** | A chatbot that reads the live telemetry, baselines, alerts and forecasts before every answer, then assesses the crew member and suggests next steps. It uses Google Gemini (free tier) and falls back to a rule-based offline mode when no AI is available. |
-| **4. Admin panel (CMS)** | Add or remove crew (and their baselines), sensors and API keys, alert limits, and manual readings; import CSV data (e.g. NASA OSDR); run demo scenarios. |
+| **4. Admin panel (CMS)** | Add or remove crew (and their baselines), sensors and API keys, alert limits, and manual readings; import CSV data (e.g. NASA OSDR); run demo scenarios; manage team accounts, public/private access and the activity log. |
 
 ## How sensor data gets in
 
@@ -54,7 +54,7 @@ Each one develops over a few minutes, so the forecast flags it **before** it cro
 
 ```bash
 cd backend && pip install -r requirements.txt
-uvicorn app.main:app --reload            # http://localhost:8000  (admin password: aura-admin)
+uvicorn app.main:app --reload            # http://localhost:8000  (login: admin / aura-admin)
 
 # optional, frontend hot-reload during design work:
 cd frontend && npm install && npm run dev   # http://localhost:5173
@@ -62,7 +62,7 @@ npm run build                               # rebuild frontend/dist before commi
 ```
 
 Environment variables: `DATABASE_URL` (Postgres; SQLite if unset), `GEMINI_API_KEY`, `GEMINI_MODEL`,
-`ADMIN_PASSWORD`, `SECRET_KEY`.
+`ADMIN_PASSWORD` (first admin account), `SECRET_KEY`, `ALLOWED_ORIGINS` (optional).
 
 ## Project layout
 
@@ -76,4 +76,4 @@ frontend/src/             dashboard, assistant, admin UI
 docs/                     data sources and AI-use disclosure
 ```
 
-See [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md) and [docs/AI_USE.md](docs/AI_USE.md).
+See [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md), [docs/AI_USE.md](docs/AI_USE.md) and [SECURITY.md](SECURITY.md).

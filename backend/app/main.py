@@ -1,17 +1,17 @@
 """AURA AI - FastAPI application: public API, sensor ingest, admin (CMS) API, and the web app."""
 import asyncio
 import csv
-import hashlib
 import hmac
 import io
 import os
+import re
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -20,10 +20,14 @@ from sqlalchemy import delete, insert, select, update
 
 from . import analysis, chat, db, simulator
 from .metrics import ALL_METRICS, CREW_METRICS, DEFAULT_BASELINE
+from .security import check_password, client_ip, hash_password, limiter, make_token, read_token
 
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "aura-admin")
-SECRET = os.getenv("SECRET_KEY", "dev-secret-change-me")
-TOKEN_HOURS = 12
+CHAT_PER_MIN = 10          # per visitor
+CHAT_PER_HOUR_ALL = 400    # whole site, protects the free AI quota
+LOGIN_FAILS = 5            # failed logins before lockout
+LOCK_SECONDS = 300
+INGEST_PER_MIN = 240       # per sensor
+CLIENT_ID = re.compile(r"^[A-Za-z0-9-]{16,64}$")
 
 
 @asynccontextmanager
@@ -37,27 +41,71 @@ async def lifespan(app):
 
 app = FastAPI(title="AURA AI", version="1.0", lifespan=lifespan,
               description="Astronaut health monitoring: ingest, analysis/prediction, assistant, admin.")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# Cross-origin access is OFF unless explicitly allowed (the web app is served from the same origin).
+_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+if _origins:
+    app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_methods=["GET", "POST", "PUT", "DELETE"],
+                       allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Client-Id"])
+
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; "
+       "font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; "
+       "frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+
+
+@app.middleware("http")
+async def security_and_audit(request: Request, call_next):
+    response = await call_next(request)
+    h = response.headers
+    h["X-Content-Type-Options"] = "nosniff"
+    h["X-Frame-Options"] = "DENY"
+    h["Referrer-Policy"] = "no-referrer"
+    h["Strict-Transport-Security"] = "max-age=31536000"
+    h["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    path = request.url.path
+    if not path.startswith(("/docs", "/redoc", "/openapi.json")):
+        h["Content-Security-Policy"] = CSP
+    if path.startswith("/api/"):
+        h["Cache-Control"] = "no-store"
+    # audit trail: every successful change made through the admin API
+    if path.startswith("/api/admin/") and request.method != "GET" and path != "/api/admin/login" \
+            and response.status_code < 400:
+        who = read_token((request.headers.get("authorization") or "")[7:]) or {}
+        verb = {"POST": "create/update", "PUT": "edit", "DELETE": "delete"}.get(request.method, request.method)
+        log_action(who.get("username"), client_ip(request), f"{verb} {path[len('/api/admin/'):]}")
+    return response
+
+
+def log_action(username, ip, action, detail=""):
+    try:
+        with db.engine.begin() as conn:
+            conn.execute(insert(db.audit).values(ts=db.now(), username=username, ip=ip,
+                                                 action=action[:60], detail=detail[:500]))
+    except Exception:
+        pass
 
 
 # ---------------- auth ----------------
-def make_token():
-    exp = str(int(time.time()) + TOKEN_HOURS * 3600)
-    sig = hmac.new(SECRET.encode(), exp.encode(), hashlib.sha256).hexdigest()
-    return f"{exp}.{sig}"
+def current_user(authorization: Optional[str] = Header(None)):
+    if authorization and authorization.startswith("Bearer "):
+        return read_token(authorization[7:])
+    return None
 
 
-def require_admin(authorization: Optional[str] = Header(None)):
-    if not authorization or not authorization.startswith("Bearer "):
+def require_admin(user=Depends(current_user)):
+    if not user:
         raise HTTPException(401, "Login required")
-    try:
-        exp, sig = authorization[7:].split(".", 1)
-    except ValueError:
-        raise HTTPException(401, "Bad token")
-    good = hmac.new(SECRET.encode(), exp.encode(), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(good, sig) or int(exp) < time.time():
-        raise HTTPException(401, "Session expired")
-    return True
+    if user["role"] != "admin":
+        raise HTTPException(403, "Admins only")
+    return user
+
+
+def require_view(user=Depends(current_user)):
+    """Dashboard + assistant: open to all in public mode, login needed in private mode."""
+    with db.engine.connect() as conn:
+        public = db.get_settings(conn).get("public_access", "on") == "on"
+    if not public and not user:
+        raise HTTPException(401, "Login required")
+    return user
 
 
 # ---------------- public ----------------
@@ -66,12 +114,12 @@ def health():
     return {"ok": True, "time": db.now().isoformat()}
 
 
-@app.get("/api/overview")
+@app.get("/api/overview", dependencies=[Depends(require_view)])
 def overview():
     return analysis.compute()
 
 
-@app.get("/api/meta")
+@app.get("/api/meta", dependencies=[Depends(require_view)])
 def meta():
     with db.engine.connect() as conn:
         lims = [dict(r._mapping) for r in conn.execute(select(db.limits))]
@@ -83,39 +131,53 @@ def meta():
 class ChatIn(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     crew_id: Optional[int] = None
-    history: list[dict] = []
 
 
-def _history(crew_id, limit=50):
-    q = select(db.chats).order_by(db.chats.c.ts.desc(), db.chats.c.id.desc()).limit(limit)
-    q = q.where(db.chats.c.crew_id == crew_id) if crew_id else q.where(db.chats.c.crew_id.is_(None))
+def _client(x_client_id: Optional[str] = Header(None)):
+    if not x_client_id or not CLIENT_ID.match(x_client_id):
+        raise HTTPException(400, "Missing or invalid X-Client-Id")
+    return x_client_id
+
+
+def _chat_scope(q, table, crew_id, client):
+    q = q.where(table.c.client_id == client)
+    return q.where(table.c.crew_id == crew_id) if crew_id else q.where(table.c.crew_id.is_(None))
+
+
+def _history(crew_id, client, limit=50):
+    q = _chat_scope(select(db.chats), db.chats, crew_id, client)
+    q = q.order_by(db.chats.c.ts.desc(), db.chats.c.id.desc()).limit(limit)
     with db.engine.connect() as conn:
         rows = list(conn.execute(q))
     return [dict(id=r.id, role=r.role, text=r.text, source=r.source, ts=r.ts.isoformat()) for r in reversed(rows)]
 
 
-@app.get("/api/chat/history")
-def chat_history(crew_id: Optional[int] = None):
-    return _history(crew_id)
+@app.get("/api/chat/history", dependencies=[Depends(require_view)])
+def chat_history(crew_id: Optional[int] = None, client: str = Depends(_client)):
+    """Only the conversation started from this browser is returned."""
+    return _history(crew_id, client)
 
 
-@app.delete("/api/chat/history")
-def clear_history(crew_id: Optional[int] = None):
+@app.delete("/api/chat/history", dependencies=[Depends(require_view)])
+def clear_history(crew_id: Optional[int] = None, client: str = Depends(_client)):
     with db.engine.begin() as conn:
-        q = delete(db.chats)
-        q = q.where(db.chats.c.crew_id == crew_id) if crew_id else q.where(db.chats.c.crew_id.is_(None))
-        conn.execute(q)
+        conn.execute(_chat_scope(delete(db.chats), db.chats, crew_id, client))
     return {"ok": True}
 
 
-@app.post("/api/chat")
-async def chat_endpoint(body: ChatIn):
-    history = [{"role": h["role"], "text": h["text"]} for h in _history(body.crew_id, 8)]
+@app.post("/api/chat", dependencies=[Depends(require_view)])
+async def chat_endpoint(body: ChatIn, request: Request, client: str = Depends(_client)):
+    ip = client_ip(request)
+    if not limiter.hit(f"chat:{ip}", CHAT_PER_MIN, 60):
+        raise HTTPException(429, "Too many questions. Please wait a minute.")
+    if not limiter.hit("chat:all", CHAT_PER_HOUR_ALL, 3600):
+        raise HTTPException(429, "The assistant is busy. Please try again later.")
+    history = [{"role": h["role"], "text": h["text"]} for h in _history(body.crew_id, client, 8)]
     text, source = await chat.reply(body.message, history, body.crew_id)
     with db.engine.begin() as conn:
         conn.execute(insert(db.chats), [
-            dict(crew_id=body.crew_id, role="user", text=body.message, source="", ts=db.now()),
-            dict(crew_id=body.crew_id, role="assistant", text=text, source=source, ts=db.now()),
+            dict(crew_id=body.crew_id, client_id=client, role="user", text=body.message, source="", ts=db.now()),
+            dict(crew_id=body.crew_id, client_id=client, role="assistant", text=text, source=source, ts=db.now()),
         ])
     return {"reply": text, "source": source}
 
@@ -130,10 +192,12 @@ class Reading(BaseModel):
 
 
 class Batch(BaseModel):
-    readings: list[Reading]
+    readings: list[Reading] = Field(max_length=500)
 
 
 def _ingest(conn, r: Reading, key: str):
+    if not limiter.hit(f"ingest:{r.sensor_id}", INGEST_PER_MIN, 60):
+        raise HTTPException(429, f"Sensor {r.sensor_id} is sending too fast")
     s = conn.execute(select(db.sensors).where(db.sensors.c.id == r.sensor_id)).first()
     if not s or not hmac.compare_digest(s.api_key, key or ""):
         raise HTTPException(403, f"Invalid sensor id or API key for sensor {r.sensor_id}")
@@ -170,15 +234,105 @@ def ingest_batch(body: Batch, x_api_key: str = Header(...)):
 
 # ---------------- admin (CMS) ----------------
 class Login(BaseModel):
-    password: str
+    username: str = Field("admin", max_length=40)
+    password: str = Field(max_length=200)
 
 
 @app.post("/api/admin/login")
-def login(body: Login):
-    if not hmac.compare_digest(body.password, ADMIN_PASSWORD):
-        time.sleep(0.5)
-        raise HTTPException(401, "Wrong password")
-    return {"token": make_token()}
+def login(body: Login, request: Request):
+    ip = client_ip(request)
+    keys = (f"fail:ip:{ip}", f"fail:user:{body.username.lower()}")
+    if limiter.count(keys[0], LOCK_SECONDS) >= LOGIN_FAILS or limiter.count(keys[1], LOCK_SECONDS) >= LOGIN_FAILS * 4:
+        raise HTTPException(429, "Too many failed attempts. Try again in 5 minutes.")
+    with db.engine.connect() as conn:
+        u = conn.execute(select(db.users).where(db.users.c.username == body.username.strip().lower())).first()
+    if not u or not check_password(body.password, u.pw_hash):
+        for k in keys:
+            limiter.hit(k, 10_000, LOCK_SECONDS)
+        log_action(body.username[:40], ip, "login failed")
+        time.sleep(0.4)
+        raise HTTPException(401, "Wrong username or password")
+    for k in keys:
+        limiter.reset(k)
+    log_action(u.username, ip, "login")
+    return {"token": make_token(u.username, u.role), "username": u.username, "role": u.role}
+
+
+# ---- team accounts ----
+class UserIn(BaseModel):
+    username: str = Field(min_length=3, max_length=40, pattern=r"^[A-Za-z0-9_.-]+$")
+    password: str = Field(min_length=10, max_length=200)
+    role: str = Field("admin", pattern=r"^(admin|viewer)$")
+
+
+class PasswordIn(BaseModel):
+    password: str = Field(min_length=10, max_length=200)
+
+
+@app.get("/api/admin/users", dependencies=[Depends(require_admin)])
+def list_users():
+    with db.engine.connect() as conn:
+        return [dict(id=r.id, username=r.username, role=r.role,
+                     created_at=r.created_at.isoformat() if r.created_at else None)
+                for r in conn.execute(select(db.users).order_by(db.users.c.id))]
+
+
+@app.post("/api/admin/users", dependencies=[Depends(require_admin)])
+def add_user(body: UserIn):
+    name = body.username.lower()
+    with db.engine.begin() as conn:
+        if conn.execute(select(db.users.c.id).where(db.users.c.username == name)).first():
+            raise HTTPException(409, "That username is taken")
+        uid = conn.execute(insert(db.users).values(username=name, role=body.role,
+                                                   pw_hash=hash_password(body.password))).inserted_primary_key[0]
+    return {"id": uid}
+
+
+@app.put("/api/admin/users/{uid}/password")
+def set_password(uid: int, body: PasswordIn, me=Depends(require_admin)):
+    with db.engine.begin() as conn:
+        conn.execute(update(db.users).where(db.users.c.id == uid).values(pw_hash=hash_password(body.password)))
+    return {"ok": True}
+
+
+@app.delete("/api/admin/users/{uid}")
+def delete_user(uid: int, me=Depends(require_admin)):
+    with db.engine.begin() as conn:
+        u = conn.execute(select(db.users).where(db.users.c.id == uid)).first()
+        if not u:
+            raise HTTPException(404, "Not found")
+        if u.username == me["username"]:
+            raise HTTPException(409, "You can't delete your own account")
+        admins = conn.execute(select(db.users.c.id).where(db.users.c.role == "admin")).all()
+        if u.role == "admin" and len(admins) <= 1:
+            raise HTTPException(409, "At least one admin must remain")
+        conn.execute(delete(db.users).where(db.users.c.id == uid))
+    return {"ok": True}
+
+
+@app.get("/api/admin/audit", dependencies=[Depends(require_admin)])
+def audit_log(limit: int = 200):
+    with db.engine.connect() as conn:
+        rows = conn.execute(select(db.audit).order_by(db.audit.c.ts.desc()).limit(min(limit, 500)))
+        return [dict(ts=r.ts.isoformat(), username=r.username, ip=r.ip, action=r.action, detail=r.detail)
+                for r in rows]
+
+
+class AccessIn(BaseModel):
+    public: bool
+
+
+@app.get("/api/admin/access", dependencies=[Depends(require_admin)])
+def get_access():
+    with db.engine.connect() as conn:
+        return {"public": db.get_settings(conn).get("public_access", "on") == "on"}
+
+
+@app.post("/api/admin/access", dependencies=[Depends(require_admin)])
+def set_access(body: AccessIn):
+    with db.engine.begin() as conn:
+        db.set_setting(conn, "public_access", "on" if body.public else "off")
+    return {"ok": True}
 
 
 class CrewIn(BaseModel):
@@ -360,7 +514,10 @@ def delete_reading(rid: int):
 @app.post("/api/admin/readings/csv", dependencies=[Depends(require_admin)])
 async def import_csv(file: UploadFile = File(...)):
     """CSV columns: sensor_id,value[,timestamp]  (timestamp ISO-8601, optional)."""
-    raw = (await file.read()).decode("utf-8-sig", errors="replace")
+    data = await file.read(2_000_001)
+    if len(data) > 2_000_000:
+        raise HTTPException(413, "CSV too large (max 2 MB)")
+    raw = data.decode("utf-8-sig", errors="replace")
     reader = csv.DictReader(io.StringIO(raw))
     rows, errors = [], []
     with db.engine.connect() as conn:
