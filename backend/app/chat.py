@@ -5,6 +5,7 @@ rule-based offline responder so the system still works with no internet / no key
 """
 import logging
 import os
+import time
 
 import httpx
 
@@ -112,8 +113,11 @@ async def reply(message, history, crew_id=None):
     body = {"system_instruction": {"parts": [{"text": SYSTEM}]}, "contents": contents,
             "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2048}}
     models = ([_working["model"]] if _working["model"] else []) + [m for m in MODELS if m != _working["model"]]
-    async with httpx.AsyncClient(timeout=25) as client:
+    t0 = time.monotonic()
+    async with httpx.AsyncClient(timeout=20) as client:
         for model in models:
+            if time.monotonic() - t0 > 40:
+                break
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             try:
                 r = await client.post(url, headers={"x-goog-api-key": key}, json=body)
